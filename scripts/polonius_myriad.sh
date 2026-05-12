@@ -12,6 +12,14 @@
 #$ -m bea
 
 # See README for setup instructions and resource recommendations.
+#
+# EDIT BEFORE SUBMITTING - fields marked <<< EDIT:
+#   -wd        Working directory (polonius repo root on Scratch)
+#   -M         Your UCL email address for job notifications
+#   --dir_data Path to your input HiFi BAM directory
+#   --dir_out  Path to your output deconcatenation directory
+#   --adapter_ref  Path to your MAS adapter FASTA
+#   --reorganise   Mode: by-sample-type | by-type | by-type-sample (or remove flag)
 
 echo "Job ID: $JOB_ID | Host: $(hostname) | Cores: $NSLOTS | $(date)"
 echo ""

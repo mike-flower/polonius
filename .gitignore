@@ -1,14 +1,12 @@
 # Runtime logs and temporary files
 *.log
 *.tmp
-logs/*/
+logs/*
+!logs/.gitkeep
 
 # Development / archived files
-archive/
-scripts/archive/
-dev/
+**/archive/
 
 # Editor / OS cruft
 .Rhistory
 **/.DS_Store
-
