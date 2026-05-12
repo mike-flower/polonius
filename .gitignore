@@ -1,0 +1,14 @@
+# Runtime logs and temporary files
+*.log
+*.tmp
+logs/*/
+
+# Development / archived files
+archive/
+scripts/archive/
+dev/
+
+# Editor / OS cruft
+.Rhistory
+**/.DS_Store
+
