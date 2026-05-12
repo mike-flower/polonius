@@ -1,0 +1,48 @@
+#!/bin/bash
+#
+# Polonius - PacBio Kinnex Deconcatenation Pipeline
+#
+# A wrapper for PacBio's skera tool for splitting Kinnex/MAS-Seq concatenated
+# HiFi reads (arrays) into their constituent S-reads.
+#
+# Version: 1.0.0
+#
+# Usage:
+#   ./polonius --dir_data /path/to/bams --dir_out /path/to/results [options]
+#
+# Examples:
+#   ./polonius --dir_data ~/data/bam --dir_out ~/results --adapter_ref ~/refs/mas8_primers.fasta
+#   ./polonius --dir_data ~/data/bam --dir_out ~/results --adapter_ref ~/refs/mas8_primers.fasta --reorganise
+#   ./polonius --help
+#
+
+# Get the directory where this script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Verify the expected files are present. polonius_cli.sh sources lib/reorganise.sh
+# at startup, so both must exist or it will fail with a cryptic source error.
+missing=()
+[ -f "$SCRIPT_DIR/scripts/polonius_cli.sh" ] || missing+=("scripts/polonius_cli.sh")
+[ -f "$SCRIPT_DIR/lib/reorganise.sh" ]      || missing+=("lib/reorganise.sh")
+
+if [ ${#missing[@]} -gt 0 ]; then
+    echo "Error: missing required file(s) in $SCRIPT_DIR:"
+    for f in "${missing[@]}"; do
+        echo "  - $f"
+    done
+    echo ""
+    echo "Expected directory structure:"
+    echo "  polonius/"
+    echo "  ├── polonius              (this wrapper)"
+    echo "  ├── scripts/"
+    echo "  │   └── polonius_cli.sh"
+    echo "  └── lib/"
+    echo "      └── reorganise.sh"
+    echo ""
+    echo "If you've recently updated, ensure your checkout is current:"
+    echo "  cd $SCRIPT_DIR && git pull"
+    exit 1
+fi
+
+# Run the Polonius CLI
+bash "$SCRIPT_DIR/scripts/polonius_cli.sh" "$@"
