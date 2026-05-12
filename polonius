@@ -5,7 +5,7 @@
 # A wrapper for PacBio's skera tool for splitting Kinnex/MAS-Seq concatenated
 # HiFi reads (arrays) into their constituent S-reads.
 #
-# Version: 1.0.0
+# Version: 1.1.0
 #
 # Usage:
 #   ./polonius --dir_data /path/to/bams --dir_out /path/to/results [options]

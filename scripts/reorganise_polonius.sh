@@ -6,7 +6,10 @@
 # directories without re-running polonius.
 #
 # This script delegates the actual classification logic to lib/reorganise.sh,
-# so it stays in lock-step with polonius_cli.sh's --reorganise flag.
+# so it stays in lock-step with the by-sample layer of polonius_cli.sh's
+# --reorganise modes. To add the by-type or by-type-sample top-level pools,
+# re-run polonius itself with --reorganise --resume (this script handles only
+# the per-sample reorganisation).
 #
 # Each --path value is auto-detected:
 #   - if its basename starts with `skera_`, it's processed as a single sample dir

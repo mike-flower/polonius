@@ -2,7 +2,7 @@
 
 A deconcatenation pipeline for PacBio Kinnex / MAS-Seq HiFi sequencing data using PacBio's skera tool. Sister tool to [Ophelia](https://github.com/mike-flower/ophelia); runs before it in the demultiplexing chain.
 
-**Version 1.0.0**
+**Version 1.1.0**
 
 ---
 
@@ -12,12 +12,15 @@ A deconcatenation pipeline for PacBio Kinnex / MAS-Seq HiFi sequencing data usin
 ./polonius \
     --dir_data ~/data/hifi_reads \
     --dir_out ~/results/deconcat \
-    --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta
+    --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta \
+    --reorganise
 ```
 
 Each input HiFi BAM (containing Kinnex-concatenated arrays) is split into one S-read per array segment, producing one `skera_<input_basename>/` output folder per input BAM.
 
-For a tidier output layout, add `--reorganise` to sort each sample's files into `deconcatenated/`, `reports/`, and `nonpassing/` subfolders.
+The `--reorganise` flag (no value = `by-type`, the recommended default) sorts each sample's files into `deconcatenated/`, `reports/`, and `nonpassing/` subfolders AND creates top-level `deconcatenated/`, `reports/`, `nonpassing/` directories with symlinks pooling files across all samples. Downstream tools (e.g. Ophelia) can then be pointed straight at `dir_out/deconcatenated/`.
+
+See [Output reorganisation](#output-reorganisation) for the four available modes (`none`, `by-sample`, `by-type`, `by-type-sample`) and when to pick each.
 
 ---
 
@@ -46,16 +49,16 @@ Kinnex / MAS-Seq prep concatenates multiple amplicons or cDNA molecules into arr
 
 ```
 Revio sequencing → HiFi BAMs (concatenated arrays)
-        │
-        ├── [optional] lima on terminal SMRTbell adapters
-        │   (splits by Kinnex library if multiple libraries pooled per cell)
-        │   → m84277_*.hifi_reads.bcM000X.bam
-        │
-        ├── Polonius (skera split with MAS adapters)
-        │   → S-reads, one per array segment
-        │
-        └── Ophelia (lima on sample barcodes)
-            → per-sample BAMs
+   │
+   ├── [optional] lima on terminal SMRTbell adapters
+   │   (splits by Kinnex library if multiple libraries pooled per cell)
+   │   → m84277_*.hifi_reads.bcM000X.bam
+   │
+   ├── Polonius (skera split with MAS adapters)
+   │   → S-reads, one per array segment
+   │
+   └── Ophelia (lima on sample barcodes)
+       → per-sample BAMs
 ```
 
 Polonius handles the middle stage. Use it whenever your HiFi reads are concatenated Kinnex arrays that need splitting into individual molecules before sample demultiplexing.
@@ -70,7 +73,7 @@ Polonius handles the middle stage. Use it whenever your HiFi reads are concatena
 # One-time setup (install skera into the same env you use for lima)
 module load python/miniconda3/24.3.0-0
 source $UCL_CONDA_PATH/etc/profile.d/conda.sh
-conda activate lima                   # or create a new env if preferred
+conda activate lima                # or create a new env if preferred
 conda install -c bioconda pbskera -y
 
 # Each session
@@ -142,19 +145,19 @@ Despite the `v1` / `v2` / `v3` naming, these aren't sequential revisions – the
 
 ```
 polonius/
-├── polonius                      # Main wrapper script
+├── polonius                        # Main wrapper script
 ├── scripts/
-│   ├── polonius_cli.sh           # Core pipeline logic
-│   ├── polonius_myriad.sh        # HPC job submission template
-│   └── reorganise_polonius.sh    # Standalone retrofit tool
+│   ├── polonius_cli.sh             # Core pipeline logic
+│   ├── polonius_myriad.sh          # HPC job submission template
+│   └── reorganise_polonius.sh      # Standalone retrofit tool (by-sample layer only)
 ├── lib/
-│   └── reorganise.sh             # Shared reorganisation library
-├── logs/                         # Pipeline logs (created automatically)
+│   └── reorganise.sh               # Shared reorganisation library
+├── logs/                           # Pipeline logs (created automatically)
 │   ├── 20260512_073000/
 │   │   ├── polonius.log
 │   │   └── polonius_params.txt
 │   └── ...
-├── www/                          # Reference adapter FASTAs (optional)
+├── www/                            # Reference adapter FASTAs (optional)
 └── README.md
 ```
 
@@ -194,7 +197,7 @@ polonius/
     --dir_data ~/data/hifi_reads \
     --dir_out ~/results/deconcat \
     --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta \
-    --dry_run
+    --reorganise --dry_run
 ```
 
 ### HPC deployment (Myriad)
@@ -221,7 +224,7 @@ mkdir -p logs
 
 ```bash
 cp scripts/polonius_myriad.sh scripts/polonius_myriad_myrun.sh
-nano scripts/polonius_myriad_myrun.sh          # edit parameters
+nano scripts/polonius_myriad_myrun.sh    # edit parameters
 qsub scripts/polonius_myriad_myrun.sh
 ```
 
@@ -295,8 +298,9 @@ Skera is internally well-parallelised; files are processed sequentially.
 
 | Parameter | Default | Description |
 |---|---|---|
-| `--reorganise` | Off | Sort each sample's output into `deconcatenated/`, `reports/`, `nonpassing/` subfolders |
-| `--drop-nonpassing` | Off | Delete non-passing BAMs instead of moving them (requires `--reorganise`) |
+| `--reorganise[=MODE]` | `none` (off) | Reorganise output. Bare `--reorganise` selects `by-type`. Modes: `none`, `by-sample`, `by-type` (default for bare flag), `by-type-sample`. See [Output reorganisation](#output-reorganisation). |
+| `--no-reorganise` | – | Shortcut for `--reorganise=none` |
+| `--drop-nonpassing` | Off | Delete non-passing BAMs instead of moving them (irreversible; requires `--reorganise` to be set to any mode other than `none`) |
 
 ### Execution options
 
@@ -321,34 +325,83 @@ polonius/logs/
 └── ...
 ```
 
-**Results without `--reorganise`** (flat layout, default):
+The four reorganisation modes produce four different on-disk layouts. Examples below assume 3 input BAMs (bcM0001, bcM0002, bcM0004).
+
+### `--reorganise=none` (or no flag) – raw skera output, flat per sample
 
 ```
 dir_out/
 ├── skera_m84277_...bcM0001/
-│   ├── m84277_...bcM0001.skera.bam               # Deconcatenated S-reads
-│   ├── m84277_...bcM0001.skera.bam.pbi
-│   ├── m84277_...bcM0001.skera.non_passing.bam   # Reads that didn't form arrays
+│   ├── m84277_...bcM0001.skera.bam                   # Deconcatenated S-reads
+│   ├── m84277_...bcM0001.skera.bam.pbi               # PacBio index
+│   ├── m84277_...bcM0001.skera.non_passing.bam       # Reads that didn't form arrays
 │   ├── m84277_...bcM0001.skera.non_passing.bam.pbi
-│   ├── m84277_...bcM0001.skera.summary.csv
+│   ├── m84277_...bcM0001.skera.summary.csv           # Summary statistics
 │   ├── m84277_...bcM0001.skera.summary.json
-│   ├── m84277_...bcM0001.skera.ligations.csv
-│   ├── m84277_...bcM0001.skera.read_lengths.csv
-│   └── m84277_...bcM0001.skera.found_adapters.csv.gz
+│   ├── m84277_...bcM0001.skera.ligations.csv         # Adapter adjacency matrix
+│   ├── m84277_...bcM0001.skera.read_lengths.csv      # S-read length distribution
+│   └── m84277_...bcM0001.skera.found_adapters.csv.gz # Per-read adapter calls
 ├── skera_m84277_...bcM0002/
 │   └── ...
-└── polonius_summary.txt                          # Overall summary table
+└── polonius_summary.txt                              # Cross-sample summary table
 ```
 
-**Results with `--reorganise`:**
+### `--reorganise=by-sample` – per-sample subdirs only
 
 ```
 dir_out/
 ├── skera_m84277_...bcM0001/
-│   ├── deconcatenated/         # *.skera.bam, *.skera.bam.pbi
-│   ├── reports/                # *.summary.*, *.ligations.csv, *.read_lengths.csv, *.found_adapters.csv.gz
-│   └── nonpassing/             # *.non_passing.* (omitted with --drop-nonpassing)
+│   ├── deconcatenated/                               # *.skera.bam, *.skera.bam.pbi
+│   ├── reports/                                      # *.summary.*, *.ligations.csv, *.read_lengths.csv, *.found_adapters.csv.gz
+│   └── nonpassing/                                   # *.non_passing.* (omitted with --drop-nonpassing)
 ├── skera_m84277_...bcM0002/
+│   └── ...
+└── polonius_summary.txt
+```
+
+### `--reorganise=by-type` (default for bare `--reorganise`) – top-level type-pooled symlinks
+
+```
+dir_out/
+├── deconcatenated/                                   # ← symlinks across all samples
+│   ├── m84277_...bcM0001.skera.bam -> ../skera_m84277_...bcM0001/deconcatenated/...
+│   ├── m84277_...bcM0001.skera.bam.pbi
+│   ├── m84277_...bcM0002.skera.bam
+│   └── ...
+├── reports/                                          # ← symlinks; all reports in one place
+│   ├── m84277_...bcM0001.skera.summary.csv
+│   ├── m84277_...bcM0001.skera.ligations.csv
+│   ├── m84277_...bcM0002.skera.summary.csv
+│   └── ...
+├── nonpassing/                                       # ← symlinks (omitted with --drop-nonpassing)
+│   └── ...
+├── skera_m84277_...bcM0001/                          # per-sample dirs preserved (forensic browsing)
+│   ├── deconcatenated/
+│   ├── reports/
+│   └── nonpassing/
+├── skera_m84277_...bcM0002/
+│   └── ...
+└── polonius_summary.txt
+```
+
+### `--reorganise=by-type-sample` – top-level type dirs with per-sample subfolders
+
+```
+dir_out/
+├── deconcatenated/
+│   ├── m84277_...bcM0001/                            # ← symlinks per sample
+│   │   ├── m84277_...bcM0001.skera.bam
+│   │   └── m84277_...bcM0001.skera.bam.pbi
+│   ├── m84277_...bcM0002/
+│   └── m84277_...bcM0004/
+├── reports/
+│   ├── m84277_...bcM0001/
+│   ├── m84277_...bcM0002/
+│   └── m84277_...bcM0004/
+├── nonpassing/
+│   ├── m84277_...bcM0001/
+│   └── ... (omitted dirs with --drop-nonpassing)
+├── skera_m84277_...bcM0001/                          # per-sample dirs preserved
 │   └── ...
 └── polonius_summary.txt
 ```
@@ -370,17 +423,49 @@ dir_out/
 
 ## Output reorganisation
 
-By default, skera writes all of a sample's outputs into a single flat directory. The `--reorganise` flag sorts each sample's output into three subfolders:
+By default polonius leaves skera's output untouched (`--reorganise=none`): one flat directory per input BAM, files identifiable by name. The `--reorganise` flag turns on tidier layouts.
 
-- **`deconcatenated/`** – the main S-reads BAM and its index (`*.skera.bam`, `*.skera.bam.pbi`). This is what you feed into Ophelia for the next stage.
+There are four modes, in increasing order of structure:
+
+### `none` (default when no `--reorganise` flag)
+
+Skera's raw output. One `skera_<input_basename>/` directory per input BAM, all output files dumped flat inside. Useful when you'll consume the files individually and don't care about layout, or when you want absolute minimal intervention.
+
+### `by-sample` (bare `--reorganise` in v1.0.0; explicit `--reorganise=by-sample` from v1.1.0)
+
+Each `skera_<sample>/` directory is split into three subfolders:
+
+- **`deconcatenated/`** – the main S-reads BAM and its index (`*.skera.bam`, `*.skera.bam.pbi`)
 - **`reports/`** – everything skera emits about the run as a whole (`*.summary.csv`, `*.summary.json`, `*.ligations.csv`, `*.read_lengths.csv`, `*.found_adapters.csv.gz`)
 - **`nonpassing/`** – reads that didn't form a clean array (`*.skera.non_passing.bam`, `*.skera.non_passing.bam.pbi`)
 
-Classification is purely filename-based, so it works regardless of which Kinnex kit you used.
+Sample-centric: easy to delete one sample's stuff entirely, but cross-sample comparisons (e.g. comparing every sample's `summary.csv`) require digging into each subfolder.
+
+### `by-type` (default for bare `--reorganise` from v1.1.0; **recommended**)
+
+Everything `by-sample` does, **plus** three top-level directories at `dir_out/` containing symlinks pooled across all samples:
+
+- `dir_out/deconcatenated/` – symlinks to every passing `*.skera.bam` and `.bam.pbi` from every sample
+- `dir_out/reports/` – symlinks to every report file from every sample
+- `dir_out/nonpassing/` – symlinks to every non-passing BAM (omitted if `--drop-nonpassing` was used)
+
+Type-centric and flat. Filenames identify which sample each file came from (the Kinnex barcode is embedded in the filename). Downstream tools like Ophelia can be pointed at `dir_out/deconcatenated/` in a single command without any extra glob or per-library loop.
+
+**Why symlinks, not copies:** the real files always live inside `skera_<sample>/<type>/`. The top-level dirs are convenience views with zero disk cost. Re-running with `--resume` simply refreshes the symlinks (`ln -sf` is idempotent), and removing them later (`rm -rf dir_out/deconcatenated`) is safe – it never touches the underlying data.
+
+### `by-type-sample` (top-level type dirs with per-sample subfolders)
+
+Like `by-type`, but the top-level type dirs are themselves divided into per-sample subdirectories:
+
+- `dir_out/deconcatenated/<sample>/` – symlinks for that sample only
+- `dir_out/reports/<sample>/`
+- `dir_out/nonpassing/<sample>/`
+
+Useful at larger scale (dozens to hundreds of libraries) where the flat `by-type` directories would become unwieldy to browse. Probably overkill for the typical 1–12-library Kinnex run.
 
 ### Saving disk space – `--drop-nonpassing`
 
-Non-passing BAMs are usually a small minority (~3% of reads in a clean Kinnex prep), so the disk saving is much less than `--drop-unbarcoded` in Ophelia – but the option is here for completeness. Irreversible, opt-in, requires `--reorganise`:
+Non-passing BAMs are usually a small minority (~3% of reads in a clean Kinnex prep), so the disk saving is much less than `--drop-unbarcoded` in Ophelia – but the option is here for completeness. Irreversible, opt-in, requires `--reorganise` (any mode other than `none`):
 
 ```bash
 ./polonius \
@@ -390,21 +475,23 @@ Non-passing BAMs are usually a small minority (~3% of reads in a clean Kinnex pr
     --reorganise --drop-nonpassing
 ```
 
+In `by-type` and `by-type-sample` modes, the top-level `nonpassing/` directory will simply not be created if there are no non-passing files to symlink.
+
 ### Retrofitting an existing output directory
 
-Two ways to apply the reorganised layout to an existing flat output directory:
+Two ways to apply a reorganised layout to an existing flat output directory:
 
-**Option 1 – re-run polonius with `--reorganise --resume`.** The resume logic is layout-aware, so already-completed samples won't be re-run through skera; they'll just be tidied.
+**Option 1 – re-run polonius with `--reorganise --resume`.** The resume logic is layout-aware, so already-completed samples won't be re-run through skera; they'll just be tidied. This is the only route that produces the top-level `by-type` or `by-type-sample` symlink pools.
 
 ```bash
 ./polonius \
     --dir_data ~/data/hifi_reads \
     --dir_out ~/results/deconcat \
     --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta \
-    --reorganise --resume
+    --reorganise --resume                # default mode: by-type
 ```
 
-**Option 2 – use the standalone `reorganise_polonius.sh` script.** Right choice when you don't want to re-supply the original polonius parameters, when the skera environment isn't available, or when reorganising someone else's output.
+**Option 2 – use the standalone `reorganise_polonius.sh` script.** Right choice when you don't want to re-supply the original polonius parameters, when the skera environment isn't available, or when reorganising someone else's output. Note that this script only handles the `by-sample` layer (per-sample type subfolders); for `by-type` or `by-type-sample` top-level pools, use Option 1.
 
 ```bash
 # Whole deconcat/ directory
@@ -420,7 +507,7 @@ scripts/reorganise_polonius.sh --path ~/results/deconcat/skera_m84277_..._bcM000
 scripts/reorganise_polonius.sh --path ~/results/deconcat --drop-nonpassing
 ```
 
-Both routes use the same classification logic (`lib/reorganise.sh`), so the resulting layout is identical.
+Both routes use the same classification logic (`lib/reorganise.sh`) for the per-sample layer.
 
 ---
 
@@ -485,7 +572,41 @@ The full option list is available via `skera split --help` once you've activated
     --reorganise
 ```
 
-### 2. Process only specific files
+Default `--reorganise` produces the `by-type` layout: per-sample structure for browsing, top-level type-pooled symlinks for downstream consumption.
+
+### 2. Feed Polonius output into Ophelia
+
+With the default `by-type` layout, Ophelia consumes the pooled BAMs in one call:
+
+```bash
+./polonius \
+    --dir_data ~/data/hifi_reads \
+    --dir_out ~/results/deconcat \
+    --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta \
+    --reorganise
+
+./ophelia \
+    --dir_data ~/results/deconcat/deconcatenated \
+    --dir_out ~/results/sample_demux \
+    --barcode_ref ~/refs/pacbio_kinnex16S_barcodes.fasta \
+    --reorganise
+```
+
+If your samples need per-library biosample CSVs, run Ophelia per library against the same pooled directory using `--file_pattern`:
+
+```bash
+for BC in bcM0001 bcM0002 bcM0004; do
+    ./ophelia \
+        --dir_data ~/results/deconcat/deconcatenated \
+        --dir_out ~/results/sample_demux/${BC} \
+        --barcode_ref ~/refs/pacbio_kinnex16S_barcodes.fasta \
+        --biosample_csv ~/refs/biosample_${BC}.csv \
+        --file_pattern "*${BC}*.bam" \
+        --reorganise
+done
+```
+
+### 3. Process only specific files
 
 ```bash
 ./polonius \
@@ -496,25 +617,37 @@ The full option list is available via `skera split --help` once you've activated
     --reorganise
 ```
 
-### 3. Test run (dry run)
+### 4. Legacy per-sample-only layout
+
+If you don't want the top-level type pools (e.g. you're not chaining straight into Ophelia and prefer browsing per-sample):
 
 ```bash
 ./polonius \
     --dir_data ~/data/hifi_reads \
     --dir_out ~/results/deconcat \
     --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta \
-    --dry_run
+    --reorganise=by-sample
 ```
 
-### 4. Resume after interruption
-
-The `--resume` option (default) skips files where a complete `*.skera.summary.csv` already exists. To force re-processing:
+### 5. Test run (dry run)
 
 ```bash
-./polonius ... --no-resume
+./polonius \
+    --dir_data ~/data/hifi_reads \
+    --dir_out ~/results/deconcat \
+    --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta \
+    --reorganise --dry_run
 ```
 
-### 5. Save disk space on confirmed runs
+### 6. Resume after interruption
+
+The `--resume` option (default) skips files where a complete `*.skera.summary.csv` already exists. The reorganisation steps (both per-sample and top-level pooling) are idempotent under `--resume` – top-level symlinks are simply refreshed with `ln -sf`.
+
+```bash
+./polonius ... --no-resume      # force re-processing of all files
+```
+
+### 7. Save disk space on confirmed runs
 
 ```bash
 ./polonius \
@@ -524,26 +657,25 @@ The `--resume` option (default) skips files where a complete `*.skera.summary.cs
     --reorganise --drop-nonpassing
 ```
 
-Or retrofit an existing run:
+Or retrofit an existing run for the per-sample layer:
 
 ```bash
 scripts/reorganise_polonius.sh --path ~/results/deconcat --drop-nonpassing
 ```
 
-### 6. Feed Polonius output into Ophelia
+### 8. Larger-scale runs (many libraries)
 
-After polonius completes with `--reorganise`, point Ophelia at each `deconcatenated/` subfolder (one Ophelia run per library, since each library has its own sample barcode mapping):
+For runs with dozens of Kinnex libraries, the flat `by-type` directories can get crowded. Use `by-type-sample` to keep the top level tidy:
 
 ```bash
-for BC in bcM0001 bcM0002 bcM0004; do
-    ./ophelia \
-        --dir_data ~/results/deconcat/skera_m84277_...${BC}/deconcatenated \
-        --dir_out  ~/results/sample_demux/${BC} \
-        --barcode_ref ~/refs/pacbio_kinnex16S_barcodes.fasta \
-        --biosample_csv ~/refs/biosample_${BC}.csv \
-        --reorganise
-done
+./polonius \
+    --dir_data ~/data/many_hifi_reads \
+    --dir_out ~/results/deconcat \
+    --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta \
+    --reorganise=by-type-sample
 ```
+
+Each top-level type dir then contains one subdir per Kinnex library.
 
 ---
 
@@ -584,6 +716,31 @@ mkdir -p logs
 qsub scripts/polonius_myriad.sh
 ```
 
+### `Invalid --reorganise mode`
+
+Polonius is strict about mode names. Valid values: `none`, `by-sample`, `by-type`, `by-type-sample`. Note the British spelling (`-ise`); the American spelling `--reorganize=by-type` is also accepted.
+
+### Top-level `deconcatenated/`, `reports/`, `nonpassing/` are missing after a run
+
+If you used `--reorganise=by-sample` (or no `--reorganise` at all), the top-level type dirs aren't created – they're a feature of `by-type` and `by-type-sample`. To add them retroactively:
+
+```bash
+./polonius ... --reorganise --resume        # default mode = by-type
+```
+
+This skips skera (all samples already processed) and just does the pooling step.
+
+### Symlinks in top-level type dirs are broken
+
+Broken symlinks indicate the underlying files in `skera_<sample>/<type>/` were moved or deleted after the pool step ran. The symlinks use absolute paths. To rebuild:
+
+```bash
+rm -rf dir_out/deconcatenated dir_out/reports dir_out/nonpassing
+./polonius ... --reorganise --resume        # refreshes the pools
+```
+
+`rm -rf` on the top-level type dirs only removes the symlinks, never the underlying BAMs.
+
 ### Low full-array percentage
 
 Check the `*.summary.csv` files. If the mode is well below the expected maximum (8/12/16) or the full-array fraction is poor:
@@ -621,6 +778,15 @@ London, UK
 ---
 
 ## Version history
+
+### 1.1.0 (May 2026)
+
+- `--reorganise` becomes a mode-valued flag with four options: `none`, `by-sample`, `by-type` (new default for bare `--reorganise`), and `by-type-sample`.
+- New `by-type` and `by-type-sample` modes add top-level `deconcatenated/`, `reports/`, `nonpassing/` directories at `dir_out/` containing symlinks pooling files across all samples. `by-type` pools flat; `by-type-sample` groups symlinks by sample within each type dir. Uses symlinks (zero disk cost), idempotent under `--resume`, doesn't disturb the underlying `skera_<sample>/` structure.
+- Downstream tools (e.g. Ophelia) can be pointed straight at `dir_out/deconcatenated/` in a single command, eliminating per-library loops or manual symlink/copy steps.
+- `--reorganise=none` and `--no-reorganise` are equivalent.
+- Behavioural change vs v1.0.0: bare `--reorganise` previously meant the `by-sample` layout; from v1.1.0 it means `by-type`. Pass `--reorganise=by-sample` explicitly to restore the v1.0.0 behaviour.
+- Updated `scripts/polonius_myriad.sh` template to use the new default.
 
 ### 1.0.0 (May 2026)
 

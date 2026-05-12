@@ -9,7 +9,7 @@
 #
 # Author: Michael Flower
 # Institution: UCL Queen Square Institute of Neurology
-# Version: 1.0.0
+# Version: 1.1.0
 #
 #==============================================================================
 
@@ -32,7 +32,7 @@ source "${POLONIUS_ROOT}/lib/reorganise.sh"
 # DEFAULTS
 #==============================================================================
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 
 # Required parameters (no defaults)
 DIR_DATA=""
@@ -46,8 +46,14 @@ THREADS=0   # 0 = auto-detect
 # Skera arguments (pass-through to skera)
 SKERA_ARGS=""
 
-# Reorganisation options (off by default to preserve historical layout)
-REORGANISE="FALSE"
+# Reorganisation mode (string-valued in v1.1.0+; was boolean in v1.0.0).
+# Values:
+#   none           - raw skera output (one flat directory per sample), no reorganisation
+#   by-sample      - per-sample deconcatenated/, reports/, nonpassing/ subfolders (v1.0.0 behaviour)
+#   by-type        - by-sample + top-level deconcatenated/, reports/, nonpassing/ symlink pools (default for bare --reorganise)
+#   by-type-sample - by-sample + top-level deconcatenated/<sample>/, reports/<sample>/, nonpassing/<sample>/ symlink pools
+REORGANISE="none"
+
 DROP_NONPASSING="FALSE"
 
 # Execution options
@@ -113,9 +119,9 @@ log_debug() {
 
 log_section() {
     echo ""
-    echo -e "${CYAN}===========================================${NC}"
+    echo -e "${CYAN}==============================================${NC}"
     echo -e "${CYAN}  $*${NC}"
-    echo -e "${CYAN}===========================================${NC}"
+    echo -e "${CYAN}==============================================${NC}"
     echo ""
 }
 
@@ -152,10 +158,25 @@ SKERA ARGUMENTS:
     --skera_args "ARGS"     Additional skera arguments (default: "")
 
 OUTPUT ORGANISATION:
-    --reorganise            Sort each sample's output into deconcatenated/,
-                            reports/, and nonpassing/ subfolders (default: off)
+    --reorganise[=MODE]     Reorganise output into a tidier layout (default: off).
+                            Bare --reorganise selects MODE=by-type. Modes:
+                              none            no reorganisation (raw skera output;
+                                              equivalent to --no-reorganise)
+                              by-sample       per-sample deconcatenated/, reports/,
+                                              nonpassing/ subfolders inside each
+                                              skera_<input>/ directory (v1.0.0 behaviour)
+                              by-type         by-sample + top-level deconcatenated/,
+                                              reports/, nonpassing/ directories with
+                                              symlinks pooling files from every sample
+                                              (RECOMMENDED for downstream tools like Ophelia)
+                              by-type-sample  by-sample + top-level deconcatenated/<sample>/,
+                                              reports/<sample>/, nonpassing/<sample>/
+                                              directories with symlinks (useful at larger
+                                              scale where flat by-type dirs get unwieldy)
+    --no-reorganise         Shortcut for --reorganise=none
     --drop-nonpassing       Delete non-passing BAMs instead of moving them
-                            (saves disk space; requires --reorganise)
+                            (saves disk space; irreversible; requires
+                            --reorganise to be set to any mode other than none)
 
 EXECUTION OPTIONS:
     --resume                Skip already processed files (default: on)
@@ -166,26 +187,35 @@ EXECUTION OPTIONS:
 
 EXAMPLES:
 
-    # Basic deconcatenation (8-fold Kinnex full-length RNA arrays)
+    # Basic deconcatenation, raw output (no reorganisation)
     ./polonius \
         --dir_data ~/data/hifi_reads \
         --dir_out ~/results/deconcat \
         --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta
 
-    # Kinnex 16S (12-fold arrays)
-    ./polonius \
-        --dir_data ~/data/hifi_reads \
-        --dir_out ~/results/deconcat \
-        --adapter_ref ~/refs/mas-seq_adapter_v2/mas12_primers.fasta
-
-    # With reorganised output layout (recommended for downstream pipelines)
+    # Recommended: deconcatenate with by-type top-level pools (default mode)
     ./polonius \
         --dir_data ~/data/hifi_reads \
         --dir_out ~/results/deconcat \
         --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta \
         --reorganise
+    # Then point Ophelia at ~/results/deconcat/deconcatenated
 
-    # Reorganise and drop non-passing BAMs to save disk space
+    # Legacy per-sample-only layout (no top-level pools)
+    ./polonius \
+        --dir_data ~/data/hifi_reads \
+        --dir_out ~/results/deconcat \
+        --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta \
+        --reorganise=by-sample
+
+    # Hybrid top-level dirs with per-sample subfolders (useful at larger scale)
+    ./polonius \
+        --dir_data ~/data/hifi_reads \
+        --dir_out ~/results/deconcat \
+        --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta \
+        --reorganise=by-type-sample
+
+    # Drop non-passing BAMs to save disk space (irreversible)
     ./polonius \
         --dir_data ~/data/hifi_reads \
         --dir_out ~/results/deconcat \
@@ -197,6 +227,7 @@ EXAMPLES:
         --dir_data ~/data/hifi_reads \
         --dir_out ~/results/deconcat \
         --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta \
+        --reorganise \
         --file_pattern "*bcM000*.bam"
 
     # Dry run to see what would happen
@@ -204,33 +235,64 @@ EXAMPLES:
         --dir_data ~/data/hifi_reads \
         --dir_out ~/results/deconcat \
         --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta \
-        --dry_run
+        --reorganise --dry_run
 
 OUTPUT STRUCTURE:
 
-    Without --reorganise (flat, default):
+    --reorganise=none (or no flag) — raw skera output, flat:
         dir_out/
-        ├── skera_m84277_...bcM0001/             # One folder per input BAM
+        ├── skera_m84277_...bcM0001/
         │   ├── *.skera.bam                      # Deconcatenated S-reads
         │   ├── *.skera.bam.pbi                  # PacBio index
         │   ├── *.skera.non_passing.bam          # Reads that did not form arrays
         │   ├── *.skera.non_passing.bam.pbi
         │   ├── *.skera.summary.csv              # Summary statistics
-        │   ├── *.skera.summary.json             # Summary (JSON)
+        │   ├── *.skera.summary.json
         │   ├── *.skera.ligations.csv            # Adapter adjacency matrix
         │   ├── *.skera.read_lengths.csv         # S-read length distribution
-        │   └── *.skera.found_adapters.csv.gz    # Per-read adapter calls
+        │   └── *.skera.found_adapters.csv.gz   # Per-read adapter calls
         ├── skera_m84277_...bcM0002/
         │   └── ...
         └── polonius_summary.txt                 # Overall summary
 
-    With --reorganise:
+    --reorganise=by-sample — per-sample subdirs only:
         dir_out/
         ├── skera_m84277_...bcM0001/
         │   ├── deconcatenated/    # *.skera.bam, *.skera.bam.pbi
         │   ├── reports/           # *.skera.summary.*, *.ligations.csv, *.read_lengths.csv, *.found_adapters.csv.gz
         │   └── nonpassing/        # *.skera.non_passing.* (omitted with --drop-nonpassing)
-        ├── skera_m84277_...bcM0002/
+        └── polonius_summary.txt
+
+    --reorganise=by-type (default) — per-sample subdirs + top-level type-pooled symlinks:
+        dir_out/
+        ├── deconcatenated/                      # ← symlinks across all samples
+        │   ├── m84277_...bcM0001.skera.bam -> skera_m84277_...bcM0001/deconcatenated/...
+        │   ├── m84277_...bcM0001.skera.bam.pbi -> ...
+        │   ├── m84277_...bcM0002.skera.bam -> ...
+        │   └── ...
+        ├── reports/                             # ← symlinks; all report files in one place
+        │   ├── m84277_...bcM0001.skera.summary.csv -> ...
+        │   ├── m84277_...bcM0002.skera.summary.csv -> ...
+        │   └── ...
+        ├── nonpassing/                          # ← symlinks (omitted with --drop-nonpassing)
+        │   └── ...
+        ├── skera_m84277_...bcM0001/             # per-sample dirs preserved (forensic browsing)
+        │   ├── deconcatenated/
+        │   ├── reports/
+        │   └── nonpassing/
+        └── polonius_summary.txt
+
+    --reorganise=by-type-sample — top-level type dirs with per-sample subfolders:
+        dir_out/
+        ├── deconcatenated/
+        │   ├── m84277_...bcM0001/   ← symlinks
+        │   ├── m84277_...bcM0002/
+        │   └── m84277_...bcM0004/
+        ├── reports/
+        │   └── (same pattern)
+        ├── nonpassing/
+        │   └── (same pattern)
+        ├── skera_m84277_...bcM0001/             # per-sample dirs preserved
         │   └── ...
         └── polonius_summary.txt
 
@@ -240,12 +302,17 @@ OUTPUT STRUCTURE:
         └── polonius_params.txt
 
 NOTES:
+    - The by-type and by-type-sample modes use symlinks for the top-level pools,
+      so they cost no disk space and don't duplicate any data. The real files
+      always live inside skera_<input>/ where skera wrote them.
     - Skera is internally parallelised; files are processed sequentially
     - Requires skera (pbskera) from bioconda (conda install -c bioconda pbskera)
     - --reorganise can be applied to existing output by re-running with
       --resume (default); already-flat samples will be tidied without
       re-running skera. For ad-hoc retrofitting of existing directories
       without re-running polonius, use scripts/reorganise_polonius.sh
+      (note: that script handles only the by-sample layer; use --resume
+      via polonius for the top-level by-type pools).
 
 EOF
 }
@@ -282,11 +349,17 @@ parse_args() {
                 shift 2
                 ;;
             --reorganise|--reorganize)
-                REORGANISE="TRUE"
+                # Bare --reorganise = the recommended default mode
+                REORGANISE="by-type"
+                shift
+                ;;
+            --reorganise=*|--reorganize=*)
+                # --reorganise=MODE (validated later in validate_inputs)
+                REORGANISE="${1#*=}"
                 shift
                 ;;
             --no-reorganise|--no-reorganize)
-                REORGANISE="FALSE"
+                REORGANISE="none"
                 shift
                 ;;
             --drop-nonpassing)
@@ -359,9 +432,21 @@ validate_inputs() {
         errors=$((errors + 1))
     fi
 
-    # --drop-nonpassing requires --reorganise (it operates on the nonpassing subdir)
-    if [[ "${DROP_NONPASSING}" == "TRUE" && "${REORGANISE}" != "TRUE" ]]; then
-        log_error "--drop-nonpassing requires --reorganise to be enabled"
+    # Validate --reorganise mode
+    case "${REORGANISE}" in
+        none|by-sample|by-type|by-type-sample)
+            ;;
+        *)
+            log_error "Invalid --reorganise mode: '${REORGANISE}'"
+            log_error "Valid modes: none, by-sample, by-type, by-type-sample"
+            errors=$((errors + 1))
+            ;;
+    esac
+
+    # --drop-nonpassing requires --reorganise (it operates on the nonpassing subdir,
+    # which only exists when per-sample reorganisation has happened)
+    if [[ "${DROP_NONPASSING}" == "TRUE" && "${REORGANISE}" == "none" ]]; then
+        log_error "--drop-nonpassing requires --reorganise (any mode other than 'none')"
         errors=$((errors + 1))
     fi
 
@@ -477,7 +562,7 @@ find_input_files() {
 }
 
 #==============================================================================
-# REORGANISE WRAPPER
+# REORGANISE WRAPPER (per-sample, by-sample layer)
 # Calls the shared library function and logs the result.
 #==============================================================================
 
@@ -502,6 +587,77 @@ reorganise_with_logging() {
         fi
     else
         log_debug "  Reorganise skipped (no sample dir): ${sample_dir}"
+    fi
+}
+
+#==============================================================================
+# POOL BY TYPE (top-level layer)
+# Creates top-level type directories (deconcatenated/, reports/, nonpassing/)
+# containing symlinks to the files inside each skera_<sample>/<type>/.
+#
+# - Uses symlinks (absolute paths). No disk cost.
+# - Idempotent (ln -sf). Safe under --resume.
+# - mode = "flat":   symlinks go to  dir_out/<type>/<file>
+# - mode = "nested": symlinks go to  dir_out/<type>/<sample>/<file>
+#                    where <sample> is the input BAM basename (without .bam)
+# - Skips empty source dirs (e.g. nonpassing/ when --drop-nonpassing was used)
+#==============================================================================
+
+pool_by_type() {
+    local mode="${1:-flat}"
+
+    if [[ "${DRY_RUN}" == "TRUE" ]]; then
+        log_info "Pooling per-sample files into top-level type directories (mode: ${mode}) [dry run]"
+        log_info "  [DRY RUN] Would create symlinks in: ${DIR_OUT}/{deconcatenated,reports,nonpassing}/"
+        return 0
+    fi
+
+    log_info "Pooling per-sample files into top-level type directories (mode: ${mode})"
+
+    local sample_count=0 link_count=0
+    shopt -s nullglob
+
+    for sample_dir in "${DIR_OUT}"/skera_*/; do
+        sample_dir="${sample_dir%/}"
+        local sample_name
+        sample_name=$(basename "${sample_dir}")
+        sample_name="${sample_name#skera_}"
+        sample_count=$((sample_count + 1))
+
+        # Iterate over the type subdirs that actually exist (deconcatenated/, reports/, nonpassing/)
+        for source_subdir in "${sample_dir}"/*/; do
+            local type
+            type=$(basename "${source_subdir%/}")
+
+            # Determine target dir based on mode
+            local target_dir="${DIR_OUT}/${type}"
+            if [[ "${mode}" == "nested" ]]; then
+                target_dir="${target_dir}/${sample_name}"
+            fi
+
+            # Symlink each file in the source subdir into the target dir
+            local files_in_subdir=0
+            for src_file in "${source_subdir}"*; do
+                [[ -f "${src_file}" ]] || continue
+                if [[ ${files_in_subdir} -eq 0 ]]; then
+                    mkdir -p "${target_dir}"
+                fi
+                local abs_src
+                abs_src=$(readlink -f "${src_file}")
+                # ln -sf is idempotent
+                ln -sf "${abs_src}" "${target_dir}/$(basename "${src_file}")"
+                link_count=$((link_count + 1))
+                files_in_subdir=$((files_in_subdir + 1))
+            done
+        done
+    done
+
+    shopt -u nullglob
+
+    if [[ ${link_count} -eq 0 ]]; then
+        log_warn "  No files found to pool (per-sample type subdirs are empty or missing)"
+    else
+        log_info "  Created ${link_count} symlink(s) across ${sample_count} sample(s)"
     fi
 }
 
@@ -534,8 +690,9 @@ process_bam() {
         # is present, skera completed successfully.
         if [[ -n "${summary_file}" ]] && grep -q "Mean Array Size" "${summary_file}" 2>/dev/null; then
             log_info "  Skipping (already processed, --resume)"
-            # If layout is flat but reorganise is requested, tidy up now.
-            if [[ "${REORGANISE}" == "TRUE" && "${summary_file}" == "${output_subdir}/${output_prefix}.summary.csv" ]]; then
+            # If reorganise is requested and the summary is still at the flat
+            # location, do the per-sample reorganisation now.
+            if [[ "${REORGANISE}" != "none" && "${summary_file}" == "${output_subdir}/${output_prefix}.summary.csv" ]]; then
                 reorganise_with_logging "${output_subdir}" "Reorganised (resume)"
             fi
             return 0
@@ -569,7 +726,7 @@ process_bam() {
     # Execute or dry run
     if [[ "${DRY_RUN}" == "TRUE" ]]; then
         log_info "  [DRY RUN] Would execute: ${skera_cmd[*]}"
-        if [[ "${REORGANISE}" == "TRUE" ]]; then
+        if [[ "${REORGANISE}" != "none" ]]; then
             log_info "  [DRY RUN] Would then reorganise output into deconcatenated/reports/nonpassing"
         fi
         return 0
@@ -590,8 +747,10 @@ process_bam() {
             log_info "  Stats: ${input_reads} input -> ${s_reads} S-reads (${pct_full}% full arrays, mean factor ${mean_factor})"
         fi
 
-        # Reorganise this sample's output if requested
-        if [[ "${REORGANISE}" == "TRUE" ]]; then
+        # Reorganise this sample's output (per-sample, by-sample layer)
+        # The top-level by-type / by-type-sample pooling happens after all samples
+        # have been processed (see main()).
+        if [[ "${REORGANISE}" != "none" ]]; then
             reorganise_with_logging "${output_subdir}" "Reorganised"
         fi
 
@@ -731,12 +890,23 @@ main() {
     mkdir -p "${DIR_OUT}"
     log_info "Output directory: ${DIR_OUT}"
 
-    if [[ "${REORGANISE}" == "TRUE" ]]; then
-        if [[ "${DROP_NONPASSING}" == "TRUE" ]]; then
-            log_info "Output layout: reorganised (non-passing files will be DELETED)"
-        else
-            log_info "Output layout: reorganised (deconcatenated/, reports/, nonpassing/)"
-        fi
+    # Describe chosen output layout
+    case "${REORGANISE}" in
+        none)
+            log_info "Output layout: none (raw skera output, flat per-sample directories)"
+            ;;
+        by-sample)
+            log_info "Output layout: by-sample (per-sample deconcatenated/, reports/, nonpassing/ subfolders)"
+            ;;
+        by-type)
+            log_info "Output layout: by-type (per-sample subfolders + top-level deconcatenated/, reports/, nonpassing/ symlink pools)"
+            ;;
+        by-type-sample)
+            log_info "Output layout: by-type-sample (per-sample subfolders + top-level type dirs with per-sample subfolders)"
+            ;;
+    esac
+    if [[ "${DROP_NONPASSING}" == "TRUE" ]]; then
+        log_warn "  Non-passing files will be DELETED (--drop-nonpassing)"
     fi
 
     # Save parameters
@@ -766,6 +936,16 @@ main() {
             FAILED_FILES+=("$(basename "${bam_file}")")
         fi
     done
+
+    # Top-level type-pooled symlinks (by-type / by-type-sample modes)
+    case "${REORGANISE}" in
+        by-type)
+            pool_by_type "flat"
+            ;;
+        by-type-sample)
+            pool_by_type "nested"
+            ;;
+    esac
 
     # Generate summary
     if [[ "${DRY_RUN}" != "TRUE" ]]; then

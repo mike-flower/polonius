@@ -8,7 +8,7 @@
 #$ -wd /home/skgtmdf/Scratch/bin/polonius    # <<< EDIT
 #$ -o logs/polonius_$JOB_ID.out
 #$ -e logs/polonius_$JOB_ID.err
-#$ -M michael.flower@ucl.ac.uk              # <<< EDIT
+#$ -M michael.flower@ucl.ac.uk               # <<< EDIT
 #$ -m bea
 
 # See README for setup instructions and resource recommendations.
@@ -31,6 +31,18 @@ cd ~/Scratch/bin/polonius
 # EDIT PARAMETERS BELOW
 # ==============================================================================
 
+# --reorganise (no value) selects the recommended default mode: by-type.
+# This produces:
+#   - per-sample skera_<sample>/{deconcatenated,reports,nonpassing}/ subfolders
+#   - top-level deconcatenated/, reports/, nonpassing/ directories at dir_out/
+#     containing symlinks pooling files across all samples (zero disk cost)
+# Downstream (Ophelia) can then point at dir_out/deconcatenated/ directly.
+#
+# Other modes:
+#   --reorganise=by-sample        # legacy v1.0.0 layout, no top-level pools
+#   --reorganise=by-type-sample   # top-level type dirs grouped by sample subfolders
+#   --reorganise=none / --no-reorganise   # raw skera output (no reorganisation)
+
 ./polonius \
     --dir_data /home/skgtmdf/Scratch/data/demultiplex/2026.05.09_ucllrs_pacbio_revio_kinnex/hifi_reads \
     --dir_out  /home/skgtmdf/Scratch/data/demultiplex/2026.05.09_ucllrs_pacbio_revio_kinnex/deconcat \
@@ -39,7 +51,7 @@ cd ~/Scratch/bin/polonius
     --reorganise \
     --resume
     # Optional extras:
-    #   --drop-nonpassing       # delete non-passing BAMs (irreversible; saves disk space)
+    #   --drop-nonpassing                # delete non-passing BAMs (irreversible; saves disk space)
     #   --file_pattern "*bcM000*.bam"
     #   --skera_args "--some-skera-flag"
 
