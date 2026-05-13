@@ -8,7 +8,7 @@
 #$ -wd /home/skgtmdf/Scratch/bin/polonius    # <<< EDIT
 #$ -o logs/polonius_$JOB_ID.out
 #$ -e logs/polonius_$JOB_ID.err
-#$ -M michael.flower@ucl.ac.uk               # <<< EDIT
+#$ -M your.email@ucl.ac.uk               # <<< EDIT
 #$ -m bea
 
 # See README for setup instructions and resource recommendations.
