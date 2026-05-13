@@ -3,27 +3,43 @@
 #
 # Standalone tool to reorganise existing Polonius (skera) output without
 # re-running polonius. Delegates all classification and file-movement logic
-# to lib/reorganise.sh, staying in lock-step with polonius_cli.sh.
+# to lib/reorganise.sh and uses the bidirectional reorganise_path() function,
+# so any source layout can be converted to any target layout.
 #
-# Each --path value is auto-detected:
-#   - if its basename starts with skera_, it is processed as a single sample dir
-#   - otherwise it is treated as a deconcat/ parent and its skera_*/ subdirs
-#     are processed
+# Source layouts auto-detected from filenames (no flag needed):
+#   - default (v1.3+)       <sample>/*
+#   - by-sample-type        <sample>/{deconcatenated,reports,nonpassing}/*
+#   - by-type               {deconcatenated,reports,nonpassing}/*
+#   - by-type-sample        {deconcatenated,reports,nonpassing}/<sample>/*
+#   - legacy v1.2 default   skera_<sample>/*   (back-compat)
 #
-# The --mode flag mirrors polonius's --reorganise modes:
-#   by-sample-type   move files into <sample>/{deconcatenated,reports,nonpassing}/
-#   by-type          move files into {deconcatenated,reports,nonpassing}/ flat
-#   by-type-sample   move files into {deconcatenated,reports,nonpassing}/<sample>/
+# Target layouts (--mode):
+#   by-sample        per-sample dirs, files flat inside (== default layout)
+#   by-sample-type   per-sample dirs with type subdirs
+#   by-type          top-level type dirs, all samples pooled flat inside each
+#   by-type-sample   top-level type dirs with per-sample subdirs
 #
-# --dir_out is required for by-type and by-type-sample (the top-level destination).
-# For by-sample-type it defaults to the parent of each skera_*/ dir.
+# Each --path is the directory containing your skera output (in any layout).
+# --dir_out defaults to each --path (in-place migration); pass --dir_out
+# explicitly only when you want to write to a different location.
+#
+# Version: 1.4.0
 
 set -euo pipefail
 
 #-----------------------------------------------------------------------------
 # Locate and source the shared library
 #-----------------------------------------------------------------------------
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+# Resolve real script location, following symlinks (portable bash; works on
+# macOS without GNU readlink -f).
+_src="${BASH_SOURCE[0]}"
+while [[ -L "${_src}" ]]; do
+    _dir="$( cd -P "$( dirname "${_src}" )" && pwd )"
+    _src="$(readlink "${_src}")"
+    [[ "${_src}" != /* ]] && _src="${_dir}/${_src}"
+done
+SCRIPT_DIR="$( cd -P "$( dirname "${_src}" )" && pwd )"
+unset _src _dir
 POLONIUS_ROOT="$( cd "${SCRIPT_DIR}/.." && pwd )"
 LIB="${POLONIUS_ROOT}/lib/reorganise.sh"
 
@@ -48,55 +64,77 @@ usage() {
     cat <<EOF
 Usage: $0 --mode MODE --path <dir> [--path <dir> ...] [OPTIONS]
 
-Reorganise existing Polonius output without re-running skera.
+Reorganise existing Polonius output without re-running skera. Works
+bidirectionally: any source layout can be converted to any target layout.
 
 Required:
-  --mode MODE         by-sample-type | by-type | by-type-sample
-  --path <dir>        skera_*/ dir OR a deconcat/ parent containing skera_*/ dirs
-                      (can be specified multiple times)
+  --mode MODE         by-sample | by-sample-type | by-type | by-type-sample
+  --path <dir>        directory containing skera output (in any layout).
+                      Can be specified multiple times to process several
+                      runs in one invocation.
 
 Options:
-  --dir_out DIR       output directory for by-type and by-type-sample modes
-                      (default: parent of each skera_*/ dir)
-  --drop-nonpassing   delete non-passing BAMs instead of moving them (irreversible)
+  --dir_out DIR       destination directory (default: same as --path,
+                      i.e. in-place migration)
+  --drop-nonpassing   delete non-passing BAMs instead of moving them
+                      (irreversible)
   --dry-run           print planned moves without executing
+                      (--dry_run is also accepted)
   -h, --help          show this help
 
 Examples:
-  # Reorganise a whole deconcat/ directory
-  $0 --mode by-type --path ~/results/deconcat --dir_out ~/results/deconcat
 
-  # Dry run first
+  # Convert in-place from whatever the current layout is to by-type
+  $0 --mode by-type --path ~/results/deconcat
+
+  # Migrate from by-sample-type to by-type (previously unsupported)
+  $0 --mode by-type --path ~/results/deconcat
+
+  # Dry-run first to preview moves
   $0 --mode by-sample-type --path ~/results/deconcat --dry-run
 
-  # Single sample dir
-  $0 --mode by-sample-type --path ~/results/deconcat/skera_m84277_...bcM0001
+  # Two runs combined into one merged tree (per-sample subdirs)
+  $0 --mode by-type-sample \\
+      --path /run1/deconcat --path /run2/deconcat \\
+      --dir_out /merged
 
-  # Multiple paths
-  $0 --mode by-type --path /run1/deconcat --path /run2/deconcat --dir_out /merged
+Notes:
+  - File classification is by filename (*.skera.bam, *.skera.summary.csv, etc.).
+    Anything that isn't a recognised skera output is left where it is.
+  - Empty intermediate directories are cleaned up after the moves.
+  - Re-running the same migration is a safe no-op: files already at their
+    target location are detected (by inode) and counted as "in-place".
 EOF
 }
 
 #-----------------------------------------------------------------------------
 # Argument parsing
 #-----------------------------------------------------------------------------
+# Arguments are space-separated: '--flag value', not '--flag=value'. This
+# matches polonius's parser; the README troubleshooting section documents
+# the rejection.
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --mode)
-            [[ $# -lt 2 ]] && { echo "Error: --mode requires a value" >&2; exit 1; }
+            [[ $# -lt 2 || "${2:-}" == --* ]] && { echo "Error: --mode requires a value" >&2; exit 1; }
             MODE="$2"; shift 2 ;;
         --path)
-            [[ $# -lt 2 ]] && { echo "Error: --path requires a value" >&2; exit 1; }
+            [[ $# -lt 2 || "${2:-}" == --* ]] && { echo "Error: --path requires a value" >&2; exit 1; }
             PATHS+=("$2"); shift 2 ;;
-        --path=*)    PATHS+=("${1#--path=}"); shift ;;
         --dir_out)
-            [[ $# -lt 2 ]] && { echo "Error: --dir_out requires a value" >&2; exit 1; }
+            [[ $# -lt 2 || "${2:-}" == --* ]] && { echo "Error: --dir_out requires a value" >&2; exit 1; }
             DIR_OUT="$2"; shift 2 ;;
-        --dir_out=*) DIR_OUT="${1#--dir_out=}"; shift ;;
         --drop-nonpassing) DROP_NONPASSING=1; shift ;;
-        --dry-run)         DRY_RUN=1;         shift ;;
-        -h|--help)         usage; exit 0 ;;
-        *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
+        --dry-run|--dry_run) DRY_RUN=1; shift ;;
+        -h|--help)   usage; exit 0 ;;
+        *)
+            if [[ "$1" == --*=* ]]; then
+                echo "Error: $1" >&2
+                echo "       Arguments use space separation: '--flag value', not '--flag=value'." >&2
+            else
+                echo "Unknown argument: $1" >&2
+            fi
+            usage; exit 1 ;;
     esac
 done
 
@@ -109,10 +147,10 @@ if [[ -z "${MODE}" ]]; then
 fi
 
 case "${MODE}" in
-    by-sample-type|by-type|by-type-sample) ;;
+    by-sample|by-sample-type|by-type|by-type-sample) ;;
     *)
         echo "Error: invalid mode '${MODE}'" >&2
-        echo "Valid modes: by-sample-type, by-type, by-type-sample" >&2
+        echo "Valid modes: by-sample, by-sample-type, by-type, by-type-sample" >&2
         exit 1
         ;;
 esac
@@ -122,54 +160,16 @@ if [[ ${#PATHS[@]} -eq 0 ]]; then
     usage; exit 1
 fi
 
-if [[ "${MODE}" != "by-sample-type" && -z "${DIR_OUT}" ]]; then
-    echo "Error: --dir_out is required for mode '${MODE}'" >&2
-    exit 1
-fi
-
 #-----------------------------------------------------------------------------
-# Per-sample processing
+# Process each --path
 #-----------------------------------------------------------------------------
 total_deconcatenated=0
 total_reports=0
 total_nonpassing=0
 total_dropped=0
 total_skipped=0
-n_samples=0
-
-process_sample_dir() {
-    local skera_dir="${1%/}"
-    local effective_dir_out="${2}"
-
-    if [[ ! -d "${skera_dir}" ]]; then
-        echo "Warning: ${skera_dir} is not a directory, skipping" >&2
-        return
-    fi
-
-    n_samples=$((n_samples + 1))
-    echo "Processing: $(basename "${skera_dir}")"
-
-    if reorganise_sample_dir "${skera_dir}" "${MODE}" "${effective_dir_out}" \
-            "${DROP_NONPASSING}" "${DRY_RUN}"; then
-        if [[ "${DROP_NONPASSING}" -eq 1 ]]; then
-            printf '  -> deconcatenated: %d, reports: %d, dropped: %d, skipped: %d\n' \
-                "${REORG_DECONCATENATED}" "${REORG_REPORTS}" "${REORG_DROPPED}" "${REORG_SKIPPED}"
-        else
-            printf '  -> deconcatenated: %d, reports: %d, nonpassing: %d, skipped: %d\n' \
-                "${REORG_DECONCATENATED}" "${REORG_REPORTS}" "${REORG_NONPASSING}" "${REORG_SKIPPED}"
-        fi
-        total_deconcatenated=$((total_deconcatenated + REORG_DECONCATENATED))
-        total_reports=$((total_reports + REORG_REPORTS))
-        total_nonpassing=$((total_nonpassing + REORG_NONPASSING))
-        total_dropped=$((total_dropped + REORG_DROPPED))
-        total_skipped=$((total_skipped + REORG_SKIPPED))
-    fi
-}
-
-#-----------------------------------------------------------------------------
-# Main loop
-#-----------------------------------------------------------------------------
-shopt -s nullglob
+total_inplace=0
+n_paths=0
 
 for arg in "${PATHS[@]}"; do
     if [[ ! -d "${arg}" ]]; then
@@ -177,34 +177,44 @@ for arg in "${PATHS[@]}"; do
         continue
     fi
 
-    # Determine effective dir_out: explicit if given, otherwise parent of skera_ dir
-    local_dir_out="${DIR_OUT:-$(cd "${arg}" && pwd)}"
-    # If arg is itself a skera_ dir, dir_out is its parent
-    if [[ "$(basename "${arg}")" == skera_* ]]; then
-        [[ -z "${DIR_OUT}" ]] && local_dir_out="$(cd "${arg}/.." && pwd)"
-        process_sample_dir "${arg}" "${local_dir_out}"
-    else
-        [[ -z "${DIR_OUT}" ]] && local_dir_out="$(cd "${arg}" && pwd)"
-        found=0
-        for skera_dir in "${arg}"/skera_*/; do
-            process_sample_dir "${skera_dir}" "${local_dir_out}"
-            found=1
-        done
-        if [[ ${found} -eq 0 ]]; then
-            echo "Warning: no skera_*/ subdirs found in ${arg}" >&2
+    n_paths=$((n_paths + 1))
+    abs_path=$(cd "${arg}" && pwd)
+    effective_dir_out="${DIR_OUT:-${abs_path}}"
+
+    echo "Processing: ${abs_path}"
+    echo "  Target mode: ${MODE}"
+    echo "  Destination: ${effective_dir_out}"
+
+    if reorganise_path "${abs_path}" "${MODE}" "${effective_dir_out}" \
+            "${DROP_NONPASSING}" "${DRY_RUN}"; then
+        if [[ "${DROP_NONPASSING}" -eq 1 ]]; then
+            printf '  -> deconcatenated: %d, reports: %d, dropped: %d, in-place: %d, skipped: %d\n' \
+                "${REORG_DECONCATENATED}" "${REORG_REPORTS}" "${REORG_DROPPED}" \
+                "${REORG_INPLACE}" "${REORG_SKIPPED}"
+        else
+            printf '  -> deconcatenated: %d, reports: %d, nonpassing: %d, in-place: %d, skipped: %d\n' \
+                "${REORG_DECONCATENATED}" "${REORG_REPORTS}" "${REORG_NONPASSING}" \
+                "${REORG_INPLACE}" "${REORG_SKIPPED}"
         fi
+
+        total_deconcatenated=$((total_deconcatenated + REORG_DECONCATENATED))
+        total_reports=$((total_reports + REORG_REPORTS))
+        total_nonpassing=$((total_nonpassing + REORG_NONPASSING))
+        total_dropped=$((total_dropped + REORG_DROPPED))
+        total_skipped=$((total_skipped + REORG_SKIPPED))
+        total_inplace=$((total_inplace + REORG_INPLACE))
+    else
+        echo "  Warning: reorganise_path failed for ${abs_path}" >&2
     fi
 done
 
-shopt -u nullglob
-
-if [[ ${n_samples} -eq 0 ]]; then
-    echo "No samples processed." >&2
+if [[ ${n_paths} -eq 0 ]]; then
+    echo "No paths processed." >&2
     exit 1
 fi
 
 echo ""
-echo "Summary across ${n_samples} sample(s):"
+echo "Summary across ${n_paths} path(s):"
 printf '  Total deconcatenated: %d\n' "${total_deconcatenated}"
 printf '  Total reports:        %d\n' "${total_reports}"
 if [[ "${DROP_NONPASSING}" -eq 1 ]]; then
@@ -212,7 +222,8 @@ if [[ "${DROP_NONPASSING}" -eq 1 ]]; then
 else
     printf '  Total nonpassing:     %d\n' "${total_nonpassing}"
 fi
-printf '  Total skipped:        %d\n' "${total_skipped}"
+printf '  Total in-place:       %d (files already at target location)\n' "${total_inplace}"
+printf '  Total skipped:        %d (non-skera files left untouched)\n' "${total_skipped}"
 
 if [[ "${DRY_RUN}" -eq 1 ]]; then
     echo ""

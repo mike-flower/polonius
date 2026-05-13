@@ -5,7 +5,7 @@
 # A wrapper for PacBio's skera tool for splitting Kinnex/MAS-Seq concatenated
 # HiFi reads (arrays) into their constituent S-reads.
 #
-# Version: 1.2.0
+# Version: 1.4.0
 #
 # Usage:
 #   ./polonius --dir_data /path/to/bams --dir_out /path/to/results [options]
@@ -16,8 +16,18 @@
 #   ./polonius --help
 #
 
-# Get the directory where this script is located
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+# Resolve real script location, following symlinks. This lets polonius be
+# invoked via a symlink (e.g. ~/bin/polonius -> /repo/polonius/polonius) and
+# still find its sibling scripts/ and lib/ directories. Portable bash idiom
+# (works on macOS without GNU readlink -f).
+_src="${BASH_SOURCE[0]}"
+while [[ -L "${_src}" ]]; do
+    _dir="$( cd -P "$( dirname "${_src}" )" && pwd )"
+    _src="$(readlink "${_src}")"
+    [[ "${_src}" != /* ]] && _src="${_dir}/${_src}"
+done
+SCRIPT_DIR="$( cd -P "$( dirname "${_src}" )" && pwd )"
+unset _src _dir
 
 # Verify the expected files are present. polonius_cli.sh sources lib/reorganise.sh
 # at startup, so both must exist or it will fail with a cryptic source error.

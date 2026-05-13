@@ -2,7 +2,7 @@
 
 A deconcatenation pipeline for PacBio Kinnex / MAS-Seq HiFi sequencing data using PacBio's skera tool. Sister tool to [Ophelia](https://github.com/mike-flower/ophelia); runs before it in the demultiplexing chain.
 
-**Version 1.2.0**
+**Version 1.4.0**
 
 ---
 
@@ -16,9 +16,9 @@ A deconcatenation pipeline for PacBio Kinnex / MAS-Seq HiFi sequencing data usin
     --reorganise by-type
 ```
 
-Each input HiFi BAM is split into one S-read per array segment, producing one `skera_<input_basename>/` output folder per input BAM. `--reorganise by-type` then moves all files into top-level `deconcatenated/`, `reports/`, and `nonpassing/` directories, with all samples pooled flat inside each. Point Ophelia straight at `dir_out/deconcatenated/`.
+Each input HiFi BAM is split into one S-read per array segment, producing one `<input_basename>/` output folder per input BAM. `--reorganise by-type` then moves all files into top-level `deconcatenated/`, `reports/`, and `nonpassing/` directories, with all samples pooled flat inside each. Point Ophelia straight at `dir_out/deconcatenated/`.
 
-See [Output reorganisation](#output-reorganisation) for all three modes (`by-sample-type`, `by-type`, `by-type-sample`) and when to pick each.
+See [Output reorganisation](#output-reorganisation) for all four modes (`by-sample`, `by-sample-type`, `by-type`, `by-type-sample`) and when to pick each. The default (no flag) is equivalent to `by-sample`.
 
 ---
 
@@ -27,7 +27,7 @@ See [Output reorganisation](#output-reorganisation) for all three modes (`by-sam
 - [Where Polonius fits](#where-polonius-fits)
 - [Installation](#installation)
 - [Input file requirements](#input-file-requirements)
-- [File structure](#file-structure)
+- [Repository layout](#repository-layout)
 - [Run analysis](#run-analysis)
   - [Command-line interface](#command-line-interface)
   - [HPC deployment (Myriad)](#hpc-deployment-myriad)
@@ -96,12 +96,11 @@ cd ~/Scratch/bin
 git clone https://github.com/mike-flower/polonius.git
 cd polonius
 
-# Create logs directory (required for Myriad SGE job output)
-mkdir -p logs
-
 # Verify
 ./polonius --help
 ```
+
+Polonius creates its own `logs/<timestamp>/` directory at runtime, so no manual setup is required for local use. For Myriad/SGE submissions an extra `mkdir -p logs` step is needed – see [HPC deployment (Myriad)](#hpc-deployment-myriad).
 
 ---
 
@@ -139,7 +138,7 @@ Despite the `v1` / `v2` / `v3` naming, these aren't sequential revisions – the
 
 ---
 
-## File structure
+## Repository layout
 
 ```
 polonius/
@@ -147,7 +146,7 @@ polonius/
 ├── scripts/
 │   ├── polonius_cli.sh             # Core pipeline logic
 │   ├── polonius_myriad.sh          # HPC job submission template
-│   └── reorganise_polonius.sh      # Standalone retrofit tool
+│   └── reorganise_polonius.sh      # Standalone migration tool
 ├── lib/
 │   └── reorganise.sh               # Shared reorganisation library
 ├── logs/                           # Pipeline logs (created automatically)
@@ -195,7 +194,7 @@ polonius/
     --dir_data ~/data/hifi_reads \
     --dir_out ~/results/deconcat \
     --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta \
-    --reorganise by-type --dry_run
+    --reorganise by-type --dry-run
 ```
 
 ### HPC deployment (Myriad)
@@ -236,10 +235,10 @@ qsub scripts/polonius_myriad_myrun.sh
 #$ -pe smp 8
 #$ -l mem=4G
 #$ -l tmpfs=50G
-#$ -wd /home/skgtmdf/Scratch/bin/polonius
+#$ -wd /home/skgtmdf/Scratch/bin/polonius    # <<< EDIT (your repo path)
 #$ -o logs/polonius_$JOB_ID.out
 #$ -e logs/polonius_$JOB_ID.err
-#$ -M your.email@ucl.ac.uk
+#$ -M your.email@ucl.ac.uk                   # <<< EDIT
 #$ -m bea
 
 module load python/miniconda3/24.3.0-0
@@ -253,9 +252,10 @@ cd ~/Scratch/bin/polonius
     --dir_out  /home/skgtmdf/Scratch/data/.../deconcat \
     --adapter_ref /home/skgtmdf/Scratch/refs/adapters/mas/mas-seq_adapter_v3/mas8_primers.fasta \
     --threads $NSLOTS \
-    --reorganise by-type \
-    --resume
+    --reorganise by-type
 ```
+
+The `<<< EDIT` lines must be updated for your account before submission. `scripts/polonius_myriad.sh` is a ready-to-edit copy of this template.
 
 #### Resource recommendations
 
@@ -292,21 +292,21 @@ Skera is internally well-parallelised; files are processed sequentially.
 |---|---|---|
 | `--skera_args` | *(none)* | Additional arguments passed to skera |
 
+> **Note**: `--skera_args` values are passed through with simple word-splitting, so embedded quotes are not preserved. Use it only for simple `--flag value` pairs without spaces inside individual values.
+
 ### Output organisation
 
 | Parameter | Default | Description |
 |---|---|---|
-| `--reorganise MODE` | off | Move output files into a tidier layout. MODE: `by-sample-type`, `by-type`, `by-type-sample`. Omit flag for raw skera output. See [Output reorganisation](#output-reorganisation). |
+| `--reorganise MODE` | omitted (≡ `by-sample`) | Output layout. MODE: `by-sample`, `by-sample-type`, `by-type`, `by-type-sample`. Omitting the flag produces the same layout as `--reorganise by-sample` (per-sample directories with files flat inside). See [Output reorganisation](#output-reorganisation). |
 | `--no-reorganise` | – | Explicit no-op; same as omitting `--reorganise` |
-| `--drop-nonpassing` | Off | Delete non-passing BAMs instead of moving them (irreversible; requires `--reorganise`) |
+| `--drop-nonpassing` | Off | Delete `*.skera.non_passing.bam{,.pbi}` files **after** skera has written them. Polonius-only post-skera step (skera has no flag to skip the files at source). Irreversible; requires `--reorganise`. See [Saving disk space](#saving-disk-space--drop-nonpassing). |
 
 ### Execution options
 
 | Parameter | Default | Description |
 |---|---|---|
-| `--resume` | On | Skip files where `*.skera.summary.csv` exists and is complete |
-| `--no-resume` | – | Force re-processing of all files |
-| `--dry_run` | Off | Show commands without executing |
+| `--dry-run` | Off | Show commands without executing (`--dry_run` is also accepted) |
 | `--verbose` | Off | Enable debug output |
 
 ---
@@ -325,11 +325,11 @@ polonius/logs/
 
 The reorganisation modes produce different on-disk layouts. Examples below assume 3 input BAMs (bcM0001, bcM0002, bcM0004).
 
-### No `--reorganise` flag – raw skera output
+### No `--reorganise` flag (equivalent to `--reorganise by-sample`) – per-sample dirs, files flat inside
 
 ```
 dir_out/
-├── skera_m84277_...bcM0001/
+├── m84277_...bcM0001/
 │   ├── m84277_...bcM0001.skera.bam                    # Deconcatenated S-reads
 │   ├── m84277_...bcM0001.skera.bam.pbi                # PacBio index
 │   ├── m84277_...bcM0001.skera.non_passing.bam        # Reads that didn't form arrays
@@ -339,10 +339,14 @@ dir_out/
 │   ├── m84277_...bcM0001.skera.ligations.csv          # Adapter adjacency matrix
 │   ├── m84277_...bcM0001.skera.read_lengths.csv       # S-read length distribution
 │   └── m84277_...bcM0001.skera.found_adapters.csv.gz  # Per-read adapter calls
-├── skera_m84277_...bcM0002/
+├── m84277_...bcM0002/
 │   └── ...
 └── polonius_summary.txt                               # Cross-sample summary table
 ```
+
+The default layout is one directory per input BAM, named after the input file stem, with skera's outputs sitting flat inside. `--reorganise by-sample` produces exactly the same thing – it's just an explicit way to state the intent.
+
+> **Note**: polonius up to v1.2 named these directories `skera_<sample>/` with a `skera_` prefix. v1.3+ drops the prefix. To convert a v1.2 output directory to the new naming (or any other layout), run `scripts/reorganise_polonius.sh --mode by-sample --path <dir_out>`.
 
 ### `--reorganise by-sample-type` – per-sample dirs with type subdirs
 
@@ -407,13 +411,21 @@ dir_out/
 
 ## Output reorganisation
 
-By default polonius leaves skera's output untouched: one `skera_<input_basename>/` directory per input BAM, all files flat inside. The `--reorganise MODE` flag moves files into a tidier layout. All modes move files – nothing is copied or symlinked.
+By default, polonius writes one directory per input BAM into `dir_out/`, named after the input file stem, with skera's outputs sitting flat inside (`dir_out/<sample>/<sample>.skera.*`). The `--reorganise MODE` flag can change this layout. All modes move files – nothing is copied or symlinked.
 
-There are three modes:
+There are four modes:
+
+### `by-sample`
+
+```
+<sample>/
+```
+
+Explicit alias for the default layout. Per-sample directories with files flat inside; same output as running polonius without `--reorganise`. Stating the mode explicitly is useful in scripts and shared command lines where you want the intended layout to be obvious to anyone reading.
 
 ### `by-sample-type`
 
-Files are moved into type subdirs within each sample directory, and the `skera_` prefix is stripped from the directory name:
+Files are moved into type subdirs within each sample directory:
 
 ```
 <sample>/{deconcatenated,reports,nonpassing}/
@@ -443,7 +455,16 @@ Useful at larger scale (dozens to hundreds of libraries) where the flat `by-type
 
 ### Saving disk space – `--drop-nonpassing`
 
-Non-passing BAMs are usually a small minority (~3% of reads in a clean Kinnex prep). Irreversible, opt-in, requires `--reorganise`:
+Skera always writes a `*.skera.non_passing.bam` file (and its `.pbi` index) for every input – there is no upstream option to skip generating them. By default, polonius keeps these files. `--drop-nonpassing` is a polonius-only post-skera step that deletes them once skera has finished writing them.
+
+Non-passing BAMs are usually a small minority (~3% of reads in a clean Kinnex prep), so leaving them on disk is normally fine. The flag exists for two situations: large multi-library runs where even 3% per file adds up, and runs where you know in advance you won't be using `skera undo` (which is the inverse of `split` and needs the non-passing BAM to reconstruct the original parent reads).
+
+**Defaults and behaviour:**
+
+- **Off by default.** Non-passing BAMs are written by skera and kept by polonius unless you explicitly opt in.
+- **Post-skera, not pre-skera.** Skera still writes the file; polonius deletes it afterwards in the reorganise step. There is no runtime saving from this flag, only a disk-space saving.
+- **Irreversible.** Once deleted, the only way to get the file back is to re-run skera on the input BAM.
+- **Requires `--reorganise`** because the deletion happens during the reorganise pass. To use the default layout while still dropping non-passing files, pass `--reorganise by-sample --drop-nonpassing`.
 
 ```bash
 ./polonius \
@@ -453,36 +474,28 @@ Non-passing BAMs are usually a small minority (~3% of reads in a clean Kinnex pr
     --reorganise by-type --drop-nonpassing
 ```
 
-### Retrofitting an existing output directory
+### Migrating an existing output directory
 
-Two ways to apply a reorganised layout to existing output without re-running skera:
-
-**Option 1 – re-run polonius with `--reorganise MODE --resume`.** Resume logic detects already-completed samples across all layout locations, so skera is skipped and only the reorganisation step runs.
+Use `scripts/reorganise_polonius.sh` to change the layout of an existing output directory without re-running skera. It auto-detects the source layout from filenames (so it works on any of the four reorganised layouts, the default `<sample>/` layout, or the legacy v1.2 `skera_<sample>/` layout) and moves files to the target layout. Idempotent: files already in target are detected by inode and left in place.
 
 ```bash
-./polonius \
-    --dir_data ~/data/hifi_reads \
-    --dir_out ~/results/deconcat \
-    --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta \
-    --reorganise by-type --resume
-```
+# Migrate in-place to by-type (works from any current layout)
+scripts/reorganise_polonius.sh --mode by-type --path ~/results/deconcat
 
-**Option 2 – use `scripts/reorganise_polonius.sh`.** Right choice when you don't want to re-supply the original polonius parameters, or when the skera environment isn't available.
-
-```bash
-# Reorganise a whole deconcat/ directory
-scripts/reorganise_polonius.sh --mode by-type \
-    --path ~/results/deconcat \
-    --dir_out ~/results/deconcat
-
-# Dry run first
+# Dry-run first to preview moves
 scripts/reorganise_polonius.sh --mode by-sample-type \
     --path ~/results/deconcat --dry-run
 
-# Single sample dir
-scripts/reorganise_polonius.sh --mode by-sample-type \
-    --path ~/results/deconcat/skera_m84277_..._bcM0001
+# Migrate between two reorganised layouts (by-sample-type -> by-type)
+scripts/reorganise_polonius.sh --mode by-type --path ~/results/deconcat
+
+# Merge two runs into one combined tree
+scripts/reorganise_polonius.sh --mode by-type-sample \
+    --path /run1/deconcat --path /run2/deconcat \
+    --dir_out /merged
 ```
+
+> Polonius itself does **not** have a "migrate-only" mode. If you re-run `./polonius --reorganise MODE` on an existing `dir_out`, polonius will re-run skera for every input BAM (which is slow but produces fresh output) and apply MODE as a final layout pass. For layout-only migration, `reorganise_polonius.sh` is the right tool.
 
 ---
 
@@ -524,14 +537,28 @@ wget -r -np -nd -R "index.html*" \
 
 ## Skera reference
 
-Polonius is a thin wrapper around `skera split`. Any skera option can be passed through via `--skera_args "..."`. As of skera 1.4.0, the most commonly relevant flags are:
+Polonius is a thin wrapper around `skera split`. The skera 1.4.0 CLI is deliberately small – all quality and adapter discrimination is driven by the input adapter FASTA, not by command-line tuning – so there's not much polonius could helpfully expose as dedicated flags. The complete option list as of skera 1.4.0 is:
 
 | Flag | Purpose |
 |---|---|
-| `--num-threads N` | Threads (polonius sets this from `--threads`; don't pass directly) |
-| `--min-rq F` | Minimum predicted read quality (default 0.99) |
+| `-j`, `--num-threads N` | Threads (polonius sets this from `--threads`; don't pass directly). `0` = autodetect. |
+| `--log-level STR` | Skera's own log level: `TRACE`, `DEBUG`, `INFO`, `WARN`, `FATAL`. Default `WARN`. |
+| `--log-file FILE` | Redirect skera's diagnostic log to a file instead of stderr. |
+| `-h`, `--help` | Show skera's help. |
+| `--version` | Show skera's version. |
 
-The full option list is available via `skera split --help` once you've activated the conda environment.
+Any of these can be forwarded via `--skera_args "..."`. To turn up skera's verbosity for debugging, for example:
+
+```bash
+./polonius \
+    --dir_data ~/data/hifi_reads \
+    --dir_out ~/results/deconcat \
+    --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta \
+    --reorganise by-type \
+    --skera_args "--log-level DEBUG"
+```
+
+Re-run `skera split --help` after `conda activate lima` to check for new flags in later versions.
 
 ---
 
@@ -590,7 +617,19 @@ done
     --reorganise by-type
 ```
 
-### 4. Per-sample layout with type subdirs
+### 4. Per-sample layout, files flat inside (also the default)
+
+```bash
+./polonius \
+    --dir_data ~/data/hifi_reads \
+    --dir_out ~/results/deconcat \
+    --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta \
+    --reorganise by-sample
+```
+
+Identical output to running polonius without `--reorganise`: one directory per input BAM, named after the input file stem, with skera's outputs flat inside.
+
+### 5. Per-sample layout with type subdirs
 
 ```bash
 ./polonius \
@@ -600,25 +639,32 @@ done
     --reorganise by-sample-type
 ```
 
-### 5. Test run (dry run)
+### 6. Test run (dry run)
 
 ```bash
 ./polonius \
     --dir_data ~/data/hifi_reads \
     --dir_out ~/results/deconcat \
     --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta \
-    --reorganise by-type --dry_run
+    --reorganise by-type --dry-run
 ```
 
-### 6. Resume after interruption
-
-`--resume` (default) skips files where a complete `*.skera.summary.csv` already exists, detecting it across all layout locations.
+### 7. Migrate an existing output directory to a different layout
 
 ```bash
-./polonius ... --no-resume      # force re-processing of all files
+# Preview first
+scripts/reorganise_polonius.sh --mode by-type \
+    --path ~/results/deconcat --dry-run
+
+# Run in-place
+scripts/reorganise_polonius.sh --mode by-type --path ~/results/deconcat
 ```
 
-### 7. Save disk space
+Works in any direction (e.g. `by-sample-type` → `by-type`, `by-type` → `by-sample`, legacy `skera_<sample>/` → anything). Detection is filename-based, not directory-based. Re-running with the same target is a safe no-op.
+
+### 8. Save disk space
+
+Skera always writes non-passing BAMs; polonius keeps them by default. `--drop-nonpassing` deletes them after skera finishes (post-skera step, irreversible). See [Saving disk space](#saving-disk-space--drop-nonpassing).
 
 ```bash
 ./polonius \
@@ -628,7 +674,7 @@ done
     --reorganise by-type --drop-nonpassing
 ```
 
-### 8. Larger-scale runs (many libraries)
+### 9. Larger-scale runs (many libraries)
 
 ```bash
 ./polonius \
@@ -679,27 +725,27 @@ qsub scripts/polonius_myriad.sh
 
 ### `Invalid --reorganise mode`
 
-Valid modes: `by-sample-type`, `by-type`, `by-type-sample`. Note the British spelling (`-ise`); the American spelling `--reorganize by-type` is also accepted.
+Valid modes: `by-sample`, `by-sample-type`, `by-type`, `by-type-sample`. Note the British spelling (`-ise`); the American spelling `--reorganize by-type` is also accepted.
 
-The mode must immediately follow the flag as a positional argument — not joined with `=`:
+The mode must immediately follow the flag as a positional argument — not joined with `=`. This applies to all polonius flags across both `polonius` and `scripts/reorganise_polonius.sh`:
 
 ```bash
 --reorganise by-type      # correct
---reorganize by-type      # also accepted
---reorganise=by-type      # not supported
+--reorganize by-type      # also accepted (American spelling)
+--reorganise=by-type      # rejected with a clear "use space separation" hint
 ```
 
-If another flag immediately follows `--reorganise` without a mode (e.g. `--reorganise --resume`), polonius will exit with a clear "requires a mode" error rather than misinterpreting the flag as the mode value.
+If another flag immediately follows `--reorganise` without a mode (e.g. `--reorganise --verbose`), polonius will exit with a clear "requires a mode" error rather than misinterpreting the flag as the mode value.
 
 ### Top-level `deconcatenated/`, `reports/`, `nonpassing/` are missing after a run
 
-These are only created by `by-type` and `by-type-sample`. To add them retroactively:
+These are only created by `by-type` and `by-type-sample`. To add them retroactively to an existing output directory without re-running skera:
 
 ```bash
-./polonius ... --reorganise by-type --resume
+scripts/reorganise_polonius.sh --mode by-type --path ~/results/deconcat
 ```
 
-This skips skera and only runs the reorganisation step.
+This works from any current layout (default `<sample>/`, `by-sample-type`, legacy `skera_<sample>/`, etc.). Idempotent: files already in the target layout are detected and left in place.
 
 ### Low full-array percentage
 
@@ -739,6 +785,27 @@ London, UK
 
 ## Version history
 
+### 1.4.0 (May 2026)
+
+- **Resume support removed.** `--resume` and `--no-resume` are no longer recognised; passing them now fails with the standard "Unknown option" error. The interaction between resume and the four reorganise layouts was difficult to make reliable enough to trust, and the operations resume tried to combine split cleanly: re-running polonius produces fresh skera output (skipping is no longer needed), and `scripts/reorganise_polonius.sh` handles layout migration without invoking skera.
+- **Stale-output cleanup.** Before running skera for each input BAM, polonius now sweeps `dir_out` for any `*.skera.*` files whose filename-derived sample name matches the current input, and removes them. This prevents stale output from a previous run in a different layout from silently overwriting fresh skera output via the final-pass reorganise. Files for other samples are untouched.
+- Reorganisation logic is cleanly split into two passes:
+  - **Per-sample step** runs after each skera invocation and moves that sample's files into the target layout. Operates on the freshly-created flat `<sample>/` directory.
+  - **Final-pass step** runs once over `dir_out` after the per-sample loop, via `reorganise_path()`. Idempotent — files already at their target location are detected by inode and left in place. Catches anything the per-sample step couldn't reach.
+- README "Migrating an existing output directory" rewritten: `scripts/reorganise_polonius.sh` is now the documented migration path. The "Resume after interruption" common-workflow entry has been removed.
+- Myriad job template no longer includes `--resume`.
+
+### 1.3.0 (May 2026)
+
+- **Default output layout changed**: polonius now writes per-sample directories as `<sample>/` (named after the input BAM stem), without the legacy `skera_` prefix.
+- New `--reorganise by-sample` mode: explicit alias for the default layout. Identical output to omitting `--reorganise`; useful in scripts where you want the intended layout to be explicit.
+- `scripts/reorganise_polonius.sh` is now bidirectional: it auto-detects the source layout from filenames (not directory structure) and can migrate between any pair of layouts (e.g. `by-sample-type` → `by-type`, `by-type` → `by-sample`, legacy `skera_<sample>/` → anything). Idempotent: re-running with the same target counts already-placed files as "in-place" and makes no changes.
+- New `reorganise_path()` function in `lib/reorganise.sh`: walks an arbitrary input path, classifies files by filename, derives the sample name, and moves to the target layout. Used by both `reorganise_polonius.sh` and polonius's final layout pass.
+- `--dry-run` is now the preferred spelling; `--dry_run` is still accepted for back-compat.
+- Argument parser hardened in both `polonius` and `reorganise_polonius.sh`: value-taking flags now reject a missing value or a following flag (e.g. `--dir_data --verbose`) with a clear error rather than silently consuming the next flag as the value.
+- Myriad job template (`scripts/polonius_myriad.sh`): three shellcheck cleanups (`source "$UCL_CONDA_PATH"/...` quoted, `cd ~/... || exit`, `--threads "$NSLOTS"` quoted).
+- README "File structure" section renamed to "Repository layout"; "Retrofitting an existing output directory" renamed to "Migrating an existing output directory" and rewritten to reflect bidirectional migration.
+
 ### 1.2.0 (May 2026)
 
 - Reorganisation modes redesigned: all modes now move files (no symlinks). Three modes: `by-sample-type`, `by-type`, `by-type-sample`.
@@ -765,4 +832,4 @@ London, UK
 - Resume capability for interrupted runs
 - `--reorganise` flag to sort each sample's output into type subfolders
 - `--drop-nonpassing` flag to delete non-passing BAMs
-- Standalone `scripts/reorganise_polonius.sh` retrofit tool
+- Standalone `scripts/reorganise_polonius.sh` migration tool

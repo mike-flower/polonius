@@ -9,7 +9,7 @@
 #
 # Author: Michael Flower
 # Institution: UCL Queen Square Institute of Neurology
-# Version: 1.2.0
+# Version: 1.4.0
 #
 #==============================================================================
 
@@ -19,8 +19,18 @@ set -euo pipefail
 # SCRIPT DIRECTORY
 #==============================================================================
 
-# Get the directory where this script is located (polonius/scripts)
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+# Resolve the script's real location, following symlinks. This lets the
+# script be invoked via a symlink (e.g. ~/bin/polonius -> /repo/polonius)
+# and still find its sibling scripts and libraries. Portable bash idiom
+# that works on macOS (no GNU readlink -f required).
+_src="${BASH_SOURCE[0]}"
+while [[ -L "${_src}" ]]; do
+    _dir="$( cd -P "$( dirname "${_src}" )" && pwd )"
+    _src="$(readlink "${_src}")"
+    [[ "${_src}" != /* ]] && _src="${_dir}/${_src}"
+done
+SCRIPT_DIR="$( cd -P "$( dirname "${_src}" )" && pwd )"
+unset _src _dir
 # Get the root polonius directory (parent of scripts/)
 POLONIUS_ROOT="$( cd "${SCRIPT_DIR}/.." && pwd )"
 
@@ -32,7 +42,7 @@ source "${POLONIUS_ROOT}/lib/reorganise.sh"
 # DEFAULTS
 #==============================================================================
 
-VERSION="1.2.0"
+VERSION="1.4.0"
 
 # Required parameters (no defaults)
 DIR_DATA=""
@@ -47,10 +57,12 @@ THREADS=0   # 0 = auto-detect
 SKERA_ARGS=""
 
 # Reorganisation mode. Values:
+#   by-sample        explicit alias for the default (no flag): per-sample
+#                    directories with files flat inside (<sample>/)
 #   by-sample-type   move files into <sample>/{deconcatenated,reports,nonpassing}/
 #   by-type          move files into dir_out/{deconcatenated,reports,nonpassing}/
 #   by-type-sample   move files into dir_out/{deconcatenated,reports,nonpassing}/<sample>/
-#   (unset)          no reorganisation; raw skera output left untouched
+#   (unset)          same as by-sample: <sample>/ directories with files flat inside
 REORGANISE=""
 
 DROP_NONPASSING="FALSE"
@@ -58,7 +70,6 @@ DROP_NONPASSING="FALSE"
 # Execution options
 DRY_RUN="FALSE"
 VERBOSE="FALSE"
-RESUME="TRUE"
 
 # Runtime globals (set during execution)
 SKERA_VERSION=""
@@ -157,8 +168,11 @@ SKERA ARGUMENTS:
     --skera_args "ARGS"     Additional skera arguments (default: "")
 
 OUTPUT ORGANISATION:
-    --reorganise MODE       Move output files into a tidier layout. MODE must be
-                            one of:
+    --reorganise MODE       Output layout. MODE must be one of:
+                              by-sample       per-sample directories, files flat
+                                              inside each. This is also the default
+                                              layout when --reorganise is omitted:
+                                              <sample>/
                               by-sample-type  per-sample directories with file-type
                                               subdirs inside each:
                                               <sample>/{deconcatenated,reports,nonpassing}/
@@ -168,25 +182,35 @@ OUTPUT ORGANISATION:
                               by-type-sample  top-level file-type directories with
                                               per-sample subdirs inside each:
                                               {deconcatenated,reports,nonpassing}/<sample>/
-                            Omit the flag entirely to leave output as raw skera output.
+                            Omit the flag for the default (== by-sample).
     --no-reorganise         Explicit no-op; same as omitting --reorganise
-    --drop-nonpassing       Delete non-passing BAMs instead of moving them
-                            (saves disk space; irreversible; requires --reorganise)
+                            (and same as --reorganise by-sample)
+    --drop-nonpassing       Delete *.skera.non_passing.bam{,.pbi} files AFTER
+                            skera has written them. Polonius-only post-skera
+                            step (skera has no flag to skip the files at
+                            source). Default off; non-passing files are kept.
+                            Irreversible; requires --reorganise.
 
 EXECUTION OPTIONS:
-    --resume                Skip already processed files (default: on)
-    --no-resume             Force re-processing of all files
-    --dry_run               Show what would be run without executing
+    --dry-run               Show what would be run without executing
+                            (--dry_run is also accepted, for back-compat)
     --verbose               Enable verbose output
     --help                  Show this help message
 
 EXAMPLES:
 
-    # Basic deconcatenation, raw output (no reorganisation)
+    # Default layout (per-sample dirs, files flat inside)
     ./polonius \
         --dir_data ~/data/hifi_reads \
         --dir_out ~/results/deconcat \
         --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta
+
+    # Same as above, but stated explicitly
+    ./polonius \
+        --dir_data ~/data/hifi_reads \
+        --dir_out ~/results/deconcat \
+        --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta \
+        --reorganise by-sample
 
     # Per-sample dirs with file-type subdirs
     ./polonius \
@@ -210,7 +234,7 @@ EXAMPLES:
         --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta \
         --reorganise by-type-sample
 
-    # Drop non-passing BAMs to save disk space (irreversible)
+    # Drop non-passing BAMs after skera writes them (saves disk space; irreversible)
     ./polonius \
         --dir_data ~/data/hifi_reads \
         --dir_out ~/results/deconcat \
@@ -230,23 +254,23 @@ EXAMPLES:
         --dir_data ~/data/hifi_reads \
         --dir_out ~/results/deconcat \
         --adapter_ref ~/refs/mas-seq_adapter_v3/mas8_primers.fasta \
-        --reorganise by-type --dry_run
+        --reorganise by-type --dry-run
 
 OUTPUT STRUCTURE:
 
-    no --reorganise flag — raw skera output:
+    no --reorganise flag (== --reorganise by-sample) — per-sample dirs, files flat inside:
         dir_out/
-        ├── skera_m84277_...bcM0001/
-        │   ├── *.skera.bam
-        │   ├── *.skera.bam.pbi
-        │   ├── *.skera.non_passing.bam
-        │   ├── *.skera.non_passing.bam.pbi
-        │   ├── *.skera.summary.csv
-        │   ├── *.skera.summary.json
-        │   ├── *.skera.ligations.csv
-        │   ├── *.skera.read_lengths.csv
-        │   └── *.skera.found_adapters.csv.gz
-        ├── skera_m84277_...bcM0002/
+        ├── m84277_...bcM0001/
+        │   ├── m84277_...bcM0001.skera.bam
+        │   ├── m84277_...bcM0001.skera.bam.pbi
+        │   ├── m84277_...bcM0001.skera.non_passing.bam
+        │   ├── m84277_...bcM0001.skera.non_passing.bam.pbi
+        │   ├── m84277_...bcM0001.skera.summary.csv
+        │   ├── m84277_...bcM0001.skera.summary.json
+        │   ├── m84277_...bcM0001.skera.ligations.csv
+        │   ├── m84277_...bcM0001.skera.read_lengths.csv
+        │   └── m84277_...bcM0001.skera.found_adapters.csv.gz
+        ├── m84277_...bcM0002/
         │   └── ...
         └── polonius_summary.txt
 
@@ -296,9 +320,8 @@ NOTES:
     - All reorganisation modes move files; nothing is copied or symlinked.
     - Skera is internally parallelised; files are processed sequentially.
     - Requires skera (pbskera) from bioconda (conda install -c bioconda pbskera).
-    - --reorganise MODE can be applied to existing output by re-running with
-      --resume; already-completed samples skip skera and go straight to the
-      reorganisation step.
+    - To migrate an existing dir_out to a different layout without re-running
+      skera, use scripts/reorganise_polonius.sh.
 
 EOF
 }
@@ -308,36 +331,58 @@ EOF
 #==============================================================================
 
 parse_args() {
+    # Helper: ensure flag $1 has a value $2 that isn't another flag.
+    # Usage: _need_value <flag-name> "$@" inside each value-taking case.
+    _need_value() {
+        local flag="$1" next="${2:-}"
+        if [[ -z "${next}" || "${next}" == --* ]]; then
+            log_error "${flag} requires a value"
+            log_error "Use --help for usage information"
+            exit 1
+        fi
+    }
+
     while [[ $# -gt 0 ]]; do
         case $1 in
             --dir_data)
+                _need_value "--dir_data" "${2:-}"
                 DIR_DATA="$2"
                 shift 2
                 ;;
             --dir_out)
+                _need_value "--dir_out" "${2:-}"
                 DIR_OUT="$2"
                 shift 2
                 ;;
             --adapter_ref)
+                _need_value "--adapter_ref" "${2:-}"
                 ADAPTER_REF="$2"
                 shift 2
                 ;;
             --file_pattern)
+                _need_value "--file_pattern" "${2:-}"
                 FILE_PATTERN="$2"
                 shift 2
                 ;;
             --threads)
+                _need_value "--threads" "${2:-}"
                 THREADS="$2"
                 shift 2
                 ;;
             --skera_args)
+                # --skera_args allows --foo as a value (it's a pass-through),
+                # so only check that *something* follows.
+                if [[ $# -lt 2 ]]; then
+                    log_error "--skera_args requires a value"
+                    exit 1
+                fi
                 SKERA_ARGS="$2"
                 shift 2
                 ;;
             --reorganise|--reorganize)
-                if [[ $# -lt 2 || "$2" == --* ]]; then
+                if [[ $# -lt 2 || "${2:-}" == --* ]]; then
                     log_error "--reorganise requires a mode: --reorganise MODE"
-                    log_error "Valid modes: by-sample-type, by-type, by-type-sample"
+                    log_error "Valid modes: by-sample, by-sample-type, by-type, by-type-sample"
                     log_error "Use --no-reorganise (or omit the flag) to leave output as-is"
                     exit 1
                 fi
@@ -352,15 +397,7 @@ parse_args() {
                 DROP_NONPASSING="TRUE"
                 shift
                 ;;
-            --resume)
-                RESUME="TRUE"
-                shift
-                ;;
-            --no-resume)
-                RESUME="FALSE"
-                shift
-                ;;
-            --dry_run)
+            --dry-run|--dry_run)
                 DRY_RUN="TRUE"
                 shift
                 ;;
@@ -373,7 +410,12 @@ parse_args() {
                 exit 0
                 ;;
             *)
-                log_error "Unknown option: $1"
+                if [[ "$1" == --*=* ]]; then
+                    log_error "$1"
+                    log_error "  Arguments use space separation: '--flag value', not '--flag=value'."
+                else
+                    log_error "Unknown option: $1"
+                fi
                 echo "Use --help for usage information"
                 exit 1
                 ;;
@@ -412,6 +454,23 @@ validate_inputs() {
         errors=$((errors + 1))
     fi
 
+    # Refuse --dir_data == --dir_out. The stale-output sweep walks --dir_out
+    # for *.skera.* files and deletes anything matching the current input's
+    # sample name; if --dir_data == --dir_out and any input BAM happens to
+    # have .skera. in its name (e.g. running polonius on a previously
+    # polonius'd directory), the input would be deleted before skera runs.
+    # Normalise both paths if they exist on disk; otherwise compare literally.
+    if [[ -n "${DIR_DATA}" && -n "${DIR_OUT}" ]]; then
+        local data_norm="${DIR_DATA}" out_norm="${DIR_OUT}"
+        [[ -d "${DIR_DATA}" ]] && data_norm=$(cd "${DIR_DATA}" && pwd)
+        [[ -d "${DIR_OUT}"  ]] && out_norm=$(cd  "${DIR_OUT}"  && pwd)
+        if [[ "${data_norm}" == "${out_norm}" ]]; then
+            log_error "--dir_data and --dir_out must not be the same path: ${data_norm}"
+            log_error "  Output cannot share a directory with the input BAMs."
+            errors=$((errors + 1))
+        fi
+    fi
+
     # Validate threads is a non-negative integer
     if [[ -n "${THREADS}" && ! "${THREADS}" =~ ^[0-9]+$ ]]; then
         log_error "--threads must be a non-negative integer, got: ${THREADS}"
@@ -420,11 +479,11 @@ validate_inputs() {
 
     # Validate --reorganise mode
     case "${REORGANISE}" in
-        ""|by-sample-type|by-type|by-type-sample)
+        ""|by-sample|by-sample-type|by-type|by-type-sample)
             ;;
         *)
             log_error "Invalid --reorganise mode: '${REORGANISE}'"
-            log_error "Valid modes: by-sample-type, by-type, by-type-sample"
+            log_error "Valid modes: by-sample, by-sample-type, by-type, by-type-sample"
             errors=$((errors + 1))
             ;;
     esac
@@ -432,6 +491,8 @@ validate_inputs() {
     # --drop-nonpassing requires --reorganise
     if [[ "${DROP_NONPASSING}" == "TRUE" && -z "${REORGANISE}" ]]; then
         log_error "--drop-nonpassing requires --reorganise MODE"
+        log_error "  (to keep the default layout while still dropping non-passing files,"
+        log_error "   pass --reorganise by-sample --drop-nonpassing)"
         errors=$((errors + 1))
     fi
 
@@ -565,7 +626,14 @@ reorganise_with_logging() {
             "${drop_flag}" "${dry_flag}"; then
         local total=$((REORG_DECONCATENATED + REORG_REPORTS + REORG_NONPASSING + REORG_DROPPED))
         if [[ ${total} -gt 0 ]]; then
-            local msg="  ${label}: deconcatenated=${REORG_DECONCATENATED}, reports=${REORG_REPORTS}, nonpassing=${REORG_NONPASSING}"
+            # by-sample mode doesn't move files (they stay flat in <sample>/),
+            # so the counts reflect classification only. Re-label accordingly
+            # to avoid overclaiming.
+            local action="${label}"
+            if [[ "${REORGANISE}" == "by-sample" ]]; then
+                action="Classified (no moves; by-sample layout)"
+            fi
+            local msg="  ${action}: deconcatenated=${REORG_DECONCATENATED}, reports=${REORG_REPORTS}, nonpassing=${REORG_NONPASSING}"
             [[ "${DROP_NONPASSING}" == "TRUE" ]] && msg="${msg}, dropped=${REORG_DROPPED}"
             log_info "${msg}"
         else
@@ -585,8 +653,11 @@ process_bam() {
     local bam_name
     bam_name=$(basename "${input_bam}" .bam)
 
+    # Per-sample output directory. Named after the input BAM stem with no
+    # added prefix — skera output files keep .skera in their basename so the
+    # directory name doesn't need to repeat it.
     local output_subdir
-    output_subdir="${DIR_OUT}/skera_${bam_name}"
+    output_subdir="${DIR_OUT}/${bam_name}"
 
     local output_prefix="${bam_name}.skera"
     local output_bam="${output_subdir}/${output_prefix}.bam"
@@ -596,25 +667,33 @@ process_bam() {
     log_info "  Input:  ${input_bam}"
     log_info "  Output: ${output_subdir}/"
 
-    # Check if already processed (resume logic). Looks for the summary CSV in
-    # the skera_<sample>/ dir (flat or within reports/ for by-sample-type).
-    # For by-type* modes the skera_ dir may already be gone after a previous run.
-    if [[ "${RESUME}" == "TRUE" ]]; then
-        local summary_file
-        summary_file=$(locate_summary_file "${DIR_OUT}" "${bam_name}")
-        if [[ -n "${summary_file}" ]] && grep -q "Mean Array Size" "${summary_file}" 2>/dev/null; then
-            log_info "  Skipping (already processed, --resume)"
-            # Apply reorganisation if the flat skera_ layout is still present
-            if [[ -n "${REORGANISE}" && -d "${output_subdir}" && \
-                  "${summary_file}" == "${output_subdir}/${output_prefix}.summary.csv" ]]; then
-                reorganise_with_logging "${output_subdir}" "Reorganised (resume)"
+    # Clean up any stale output for THIS sample from prior runs. We walk
+    # DIR_OUT for files matching *.skera.* and remove only those whose
+    # sample-name-derived-from-filename equals this sample. Other samples'
+    # files (whether from this run or earlier) are untouched. This guarantees
+    # the run is "fresh" for each input BAM and prevents the final-pass
+    # reorganise from silently overwriting new files with stale duplicates
+    # left over in a different layout.
+    if [[ "${DRY_RUN}" != "TRUE" && -d "${DIR_OUT}" ]]; then
+        local stale_count=0
+        while IFS= read -r -d '' stale_file; do
+            local stale_bn
+            stale_bn=$(basename "${stale_file}")
+            local stale_sample
+            stale_sample=$(sample_name_from_filename "${stale_bn}")
+            if [[ "${stale_sample}" == "${bam_name}" ]]; then
+                rm -f -- "${stale_file}"
+                stale_count=$((stale_count + 1))
             fi
-            return 0
+        done < <(find "${DIR_OUT}" -type f -name "*.skera.*" -print0 2>/dev/null)
+        if [[ ${stale_count} -gt 0 ]]; then
+            log_info "  Removed ${stale_count} stale output file(s) from previous run"
         fi
+        # Sweep up any directories left empty by the removals (e.g. a prior
+        # by-sample-type's <sample>/{deconcatenated,reports,nonpassing}/ tree,
+        # or a legacy v1.2 skera_<sample>/ dir).
+        find "${DIR_OUT}" -mindepth 1 -type d -empty -delete 2>/dev/null || true
     fi
-
-    # Create output directory
-    mkdir -p "${output_subdir}"
 
     # Build skera command: skera split <input> <adapters> <output>
     local skera_cmd=("skera" "split")
@@ -645,6 +724,9 @@ process_bam() {
         fi
         return 0
     fi
+
+    # Create output directory (only outside dry-run; dry-run has no side effects)
+    mkdir -p "${output_subdir}"
 
     # Run skera
     if "${skera_cmd[@]}"; then
@@ -706,32 +788,13 @@ generate_summary() {
         for f in "${INPUT_FILES[@]}"; do
             local bam_name
             bam_name=$(basename "$f" .bam)
-            local sample_name="${bam_name}"
-            local output_prefix="${bam_name}.skera"
 
-            # Summary file location depends on mode:
-            #   none:            skera_<sample>/<prefix>.summary.csv
-            #   by-sample-type:  <sample>/reports/<prefix>.summary.csv
-            #   by-type:         dir_out/reports/<prefix>.summary.csv
-            #   by-type-sample:  dir_out/reports/<sample>/<prefix>.summary.csv
-            local summary=""
-            case "${REORGANISE}" in
-                "")
-                    summary=$(locate_summary_file "${DIR_OUT}" "${bam_name}")
-                    ;;
-                by-sample-type)
-                    summary="${DIR_OUT}/${sample_name}/reports/${output_prefix}.summary.csv"
-                    [[ -f "${summary}" ]] || summary=""
-                    ;;
-                by-type)
-                    summary="${DIR_OUT}/reports/${output_prefix}.summary.csv"
-                    [[ -f "${summary}" ]] || summary=""
-                    ;;
-                by-type-sample)
-                    summary="${DIR_OUT}/reports/${sample_name}/${output_prefix}.summary.csv"
-                    [[ -f "${summary}" ]] || summary=""
-                    ;;
-            esac
+            # Summary CSV location depends on mode; locate_summary_file searches
+            # every possible layout (none / by-sample / by-sample-type / by-type /
+            # by-type-sample) and returns the first hit, so we can use it for any
+            # mode without branching.
+            local summary
+            summary=$(locate_summary_file "${DIR_OUT}" "${bam_name}")
             if [[ -n "${summary}" ]]; then
                 local input_reads s_reads pct_full mean_factor
                 input_reads=$(awk -F, '$1=="Input Reads" {print $2}' "${summary}" | head -1)
@@ -781,7 +844,6 @@ save_parameters() {
         echo "drop_nonpassing=${DROP_NONPASSING}"
         echo ""
         echo "# Execution"
-        echo "resume=${RESUME}"
         echo "dry_run=${DRY_RUN}"
         echo "verbose=${VERBOSE}"
     } > "${params_file}"
@@ -819,14 +881,18 @@ main() {
     # Validate inputs (errors now captured in log)
     validate_inputs
 
-    # Create output directory
-    mkdir -p "${DIR_OUT}"
+    # Create output directory (dry-run is side-effect-free; the log
+    # directory is still created above because we want the log even
+    # for dry runs)
+    if [[ "${DRY_RUN}" != "TRUE" ]]; then
+        mkdir -p "${DIR_OUT}"
+    fi
     log_info "Output directory: ${DIR_OUT}"
 
     # Describe chosen output layout
     case "${REORGANISE}" in
-        "")
-            log_info "Output layout: none (raw skera output)"
+        ""|by-sample)
+            log_info "Output layout: by-sample (<sample>/, files flat inside)"
             ;;
         by-sample-type)
             log_info "Output layout: by-sample-type (<sample>/{deconcatenated,reports,nonpassing}/)"
@@ -839,10 +905,13 @@ main() {
             ;;
     esac
     if [[ "${DROP_NONPASSING}" == "TRUE" ]]; then
-        log_warn "  Non-passing files will be DELETED (--drop-nonpassing)"
+        log_warn "  Non-passing files will be DELETED after skera writes them (--drop-nonpassing)"
     fi
 
-    # Save parameters
+    # Save parameters. Always written (including on dry-run, where the file
+    # is marked dry_run=TRUE) because LOG_DIR is created unconditionally for
+    # the log file, and the params file captures file_pattern, threads, and
+    # skera_args which don't appear elsewhere in the log.
     save_parameters
 
     # Setup environment
@@ -869,6 +938,29 @@ main() {
             FAILED_FILES+=("$(basename "${bam_file}")")
         fi
     done
+
+    # Final-pass reorganisation. The per-sample reorganise step inside
+    # process_bam handles freshly-created flat <sample>/ dirs. This final pass
+    # walks DIR_OUT filename-by-filename via reorganise_path() and catches
+    # anything that ended up in the wrong layout (e.g. stale files from a
+    # previous run with different --reorganise mode, or a legacy v1.2
+    # skera_<sample>/ directory still sitting alongside fresh output).
+    # Idempotent: files already at their target location are detected via
+    # inode and counted as "in-place" with no move.
+    if [[ -n "${REORGANISE}" && "${DRY_RUN}" != "TRUE" && ${succeeded} -gt 0 ]]; then
+        local drop_flag=0
+        [[ "${DROP_NONPASSING}" == "TRUE" ]] && drop_flag=1
+        if reorganise_path "${DIR_OUT}" "${REORGANISE}" "${DIR_OUT}" "${drop_flag}" 0; then
+            local moved_total=$((REORG_DECONCATENATED + REORG_REPORTS + REORG_NONPASSING - REORG_INPLACE))
+            if [[ ${moved_total} -gt 0 || ${REORG_DROPPED} -gt 0 ]]; then
+                log_info "Final layout pass: ${moved_total} file(s) migrated, ${REORG_INPLACE} already in place, ${REORG_DROPPED} dropped"
+            else
+                log_debug "Final layout pass: all ${REORG_INPLACE} file(s) already in target layout"
+            fi
+        else
+            log_warn "Final layout pass failed (reorganise_path returned non-zero)"
+        fi
+    fi
 
     # Generate summary
     if [[ "${DRY_RUN}" != "TRUE" ]]; then
